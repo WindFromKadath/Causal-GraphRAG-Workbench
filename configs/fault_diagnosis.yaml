@@ -1,0 +1,45 @@
+# Domain configuration for Industrial Equipment Engineering Deployment & Fault Diagnosis.
+# Usage:
+#   uv run llm-graphrag-kg build --config-file configs/fault_diagnosis.yaml
+#   uv run llm-graphrag-kg query "你的故障诊断问题" --config-file configs/fault_diagnosis.yaml --export-html
+
+paths:
+  input_dir: "data/sample_fault_diagnosis"
+  storage_dir: "storage/fault_diagnosis"
+  output_dir: "outputs/fault_diagnosis"
+
+chunking:
+  chunk_size: 480
+  chunk_overlap: 80
+
+extraction:
+  temperature: 0.1
+  max_entities_per_chunk: 18
+  entity_types:
+    - Equipment
+    - Component
+    - Sensor
+    - Symptom
+    - FaultMode
+    - RootCause
+    - Algorithm
+    - DeploymentComponent
+    - RemediationSOP
+    - Standard
+
+community:
+  resolution: 1.0
+  seed: 42
+  summarize_with_llm: false
+
+retrieval:
+  default_mode: "hybrid"
+  top_k_chunks: 5
+  top_k_entities: 6
+  k_hops: 2
+  top_k_communities: 3
+  temperature: 0.2
+
+visualization:
+  default_color_by: "type"
+  physics_enabled: true

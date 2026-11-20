@@ -17,13 +17,20 @@
 
 ```text
 LLM-GraphRAG-KG/
-├── .env.example          # 环境变量模板（复制为 .env 后填入实际配置）
-├── CHANGELOG.md          # 修改日志（每次 Git 提交同步更新）
-├── configs/default.yaml  # 非敏感默认运行参数
-├── data/sample/          # 公开脱敏示例语料
-├── scripts/              # 隐私与提交规范检查工具
-├── src/llm_graphrag_kg/  # 核心框架源码
-└── tests/                # 自动化测试套件
+├── .env.example                 # 环境变量模板（复制为 .env 后填入实际配置）
+├── CHANGELOG.md                 # 修改日志（每次 Git 提交同步更新）
+├── configs/
+│   ├── default.yaml             # 通用默认运行参数
+│   └── fault_diagnosis.yaml     # 工业工程部署与故障诊断领域本体配置
+├── data/
+│   ├── sample/                  # 轻量基础演示语料（3 篇）
+│   └── sample_fault_diagnosis/  # 工程部署与工业故障诊断脱敏语料（6 篇，含多跳因果链）
+├── docs/
+│   ├── engineering_deployment.md     # 工程部署、离线迁移与存储演进指南
+│   └── troubleshooting_diagnosis.md  # 系统故障诊断与排障手册（FD-01 ~ FD-08）
+├── scripts/                     # 隐私与提交规范检查工具
+├── src/llm_graphrag_kg/         # 核心框架源码
+└── tests/                       # 自动化测试套件
 ```
 
 ## 快速开始（基于 `uv`）

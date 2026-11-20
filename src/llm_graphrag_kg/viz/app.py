@@ -65,9 +65,30 @@ def _load_pipeline_state(
         return None, 0, str(exc)
 
 
+def _discover_config_files() -> list[str]:
+    cfg_dir = Path.cwd() / "configs"
+    if not cfg_dir.is_dir():
+        return ["configs/default.yaml"]
+    found = sorted(
+        p.relative_to(Path.cwd()).as_posix()
+        for p in cfg_dir.glob("*.yaml")
+        if not p.name.endswith(".local.yaml")
+    )
+    return found or ["configs/default.yaml"]
+
+
 def _render_sidebar() -> tuple[AppConfig, Path, Path, str | None]:
     with st.sidebar:
         st.header("⚙️ 运行配置与操作")
+
+        config_files = _discover_config_files()
+        selected_cfg_rel = st.selectbox(
+            "场景配置文件 (YAML)",
+            options=config_files,
+            index=0,
+            help="可在默认示例与故障诊断领域配置（configs/fault_diagnosis.yaml）间一键切换。",
+        )
+        selected_cfg_path = Path.cwd() / selected_cfg_rel
 
         provider_choice = st.selectbox(
             "LLM Provider",
@@ -77,9 +98,20 @@ def _render_sidebar() -> tuple[AppConfig, Path, Path, str | None]:
         )
         provider_override = None if provider_choice == "default (.env)" else provider_choice
 
-        cfg = load_config(llm_provider_override=provider_override)
-        input_rel = st.text_input("输入文档目录（相对路径）", value=cfg.paths.input_dir)
-        storage_rel = st.text_input("图谱存储目录（相对路径）", value=cfg.paths.storage_dir)
+        cfg = load_config(
+            config_path=selected_cfg_path,
+            llm_provider_override=provider_override,
+        )
+        input_rel = st.text_input(
+            "输入文档目录（相对路径）",
+            value=cfg.paths.input_dir,
+            key=f"input_dir_{selected_cfg_rel}",
+        )
+        storage_rel = st.text_input(
+            "图谱存储目录（相对路径）",
+            value=cfg.paths.storage_dir,
+            key=f"storage_dir_{selected_cfg_rel}",
+        )
 
         input_dir = cfg.resolve_path(input_rel)
         storage_dir = cfg.resolve_path(storage_rel)

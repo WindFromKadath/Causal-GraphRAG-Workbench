@@ -6,6 +6,18 @@
 
 ---
 
+## [2026-11-20] Docs & Domain Corpus - 工程部署指南、故障诊断手册与工业故障诊断脱敏语料库
+- **提交类型**：`docs` / `feat`
+- **变更背景**：扩充面向真实工程落地的内容量，补齐框架本身的工程部署与故障排查文档，同时新增高密度、跨文档多跳因果结构的“工业设备工程部署与故障诊断”公开脱敏语料集及专用配置。
+- **主要修改**：
+  - 新增工程运维文档：`docs/engineering_deployment.md`（在线/内网离线 `uv` 部署、Ollama/vLLM 推理配置、systemd 托管与 Neo4j 迁移路径）与 `docs/troubleshooting_diagnosis.md`（FD-01 ~ FD-08 六大类工程故障诊断与排障手册）。
+  - 新增工业故障诊断专用配置 `configs/fault_diagnosis.yaml` 与 6 篇公开脱敏领域语料 `data/sample_fault_diagnosis/`（覆盖设备传感、机械故障机理、信号处理与 AI 诊断算法、云边工程部署、ISO 20816 与现场 SOP、跨子系统多跳排障案例）。
+  - 增强 `src/llm_graphrag_kg/viz/app.py` 侧边栏，支持一键发现并切换 `configs/*.yaml` 场景配置；同步补充 `MockLLMClient` 工业领域词表、`README.md` 索引与端到端测试用例 `tests/test_pipeline_e2e.py`。
+- **验证方式**：通过 `ruff check`、`pytest -v`（8/8 通过）与故障诊断语料 CLI 全链路（`build` → `audit` → `export-viz` → `query --export-html`）实跑验证。
+- **隐私与迁移自检**：所有新增语料均为公开通用工程知识，已通过 `privacy_check.py --staged --require-changelog`，无私有数据、密钥或本机绝对路径入库。
+
+---
+
 ## [2026-11-20] Phase 2 - Streamlit 一站式可视化内容核验工作台
 - **提交类型**：`feat`
 - **变更背景**：面向零经验用户降低 GraphRAG + KG 调试门槛，在 Phase 1 静态导出基础上构建本地交互式核验工作台，实现“切片 → 实体与三元组溯源 → 社区聚类 → 实时问答与检索子图高亮”全流程同屏核验。

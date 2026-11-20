@@ -91,3 +91,30 @@ def test_end_to_end_build_query_and_visual_exports(tmp_path: Path) -> None:
     graphml_path = export_graphml(reloaded.graph_store, output_dir / "kg.graphml")
     assert graphml_path.is_file()
     assert "<graphml" in graphml_path.read_text(encoding="utf-8")
+
+
+def test_fault_diagnosis_domain_config_and_corpus(tmp_path: Path) -> None:
+    cfg = load_config(
+        config_path=Path("configs/fault_diagnosis.yaml"),
+        project_root=Path.cwd(),
+        llm_provider_override="mock",
+        embedding_provider_override="local_hash",
+    )
+    pipeline = GraphRAGPipeline(cfg)
+    stats = pipeline.build(storage_dir=tmp_path / "fd_storage")
+
+    assert stats.doc_count == 6
+    assert stats.chunk_count >= 10
+    assert stats.entity_count >= 30
+    assert stats.relation_count >= 30
+
+    res = pipeline.query(
+        "离心泵机组出现2倍频振动升高和电机定子电流波动时，可能根因与处置SOP是什么？",
+        mode="hybrid",
+        auto_load=False,
+    )
+    assert res.answer
+    assert len(res.trace.seed_entity_ids) >= 2
+    assert len(res.trace.expanded_entity_ids) >= len(res.trace.seed_entity_ids)
+    assert len(res.evidences) >= 2
+
