@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -249,3 +251,39 @@ def privacy_check(
     exit_code = int(module.main(argv))
     if exit_code != 0:
         raise typer.Exit(code=exit_code)
+
+
+@app.command("ui")
+def ui(
+    host: Annotated[str, typer.Option(help="Host address to bind Streamlit server.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Port to bind Streamlit server.")] = 8501,
+) -> None:
+    """Launch the Phase 2 Streamlit visual verification workbench."""
+    if importlib.util.find_spec("streamlit") is None:
+        console.print(
+            "[red]Streamlit is not installed in the current environment.[/red]\n"
+            "Run: [cyan]uv sync --extra viz[/cyan]"
+        )
+        raise typer.Exit(code=1)
+
+    app_path = Path(__file__).resolve().parent / "viz" / "app.py"
+    console.print(
+        Panel(
+            f"Launching visual verification workbench at http://{host}:{port}\n"
+            "Press Ctrl+C to stop.",
+            title="LLM-GraphRAG-KG Workbench",
+            border_style="cyan",
+        )
+    )
+    cmd = [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(app_path),
+        "--server.address",
+        host,
+        "--server.port",
+        str(port),
+    ]
+    raise typer.Exit(code=subprocess.call(cmd))

@@ -8,7 +8,7 @@
 - **多模型兼容**：统一采用 OpenAI-compatible 协议，通过 `.env` 一键切换云端大模型 API、本机 Magpie / Ollama / vLLM 等本地模型服务，亦内置离线 `mock` 模式用于零成本调试与自动化测试。
 - **可视化内容核验**：
   - Phase 1：自动生成图谱质量审计报告（Markdown/CSV）、标准 `.graphml`（兼容 Gephi/Cytoscape）、以及 `PyVis` 单文件交互式 HTML 图谱（支持悬停原文溯源与**问答检索子图高亮**）。
-  - Phase 2（规划中）：基于 `Streamlit` 的一站式本地可视化核验工作台。
+  - Phase 2：基于 `Streamlit` 的一站式本地可视化核验工作台（同屏查看文档切片、过滤实体/三元组并反查原文、社区总览、实时提问与检索子图联动高亮）。
 - **隐私与项目管理规范**：
   - 严格隔离代码、配置、脱敏示例数据（`data/sample/`）与私有运行数据（`data/private/`、`storage/`、`outputs/`）。
   - 每次 Git 提交前自动执行隐私与修改日志（`CHANGELOG.md`）检查。
@@ -47,6 +47,10 @@ uv run llm-graphrag-kg export-viz
 
 # 6. 执行 GraphRAG 问答并导出带检索子图高亮的交互式核验网页
 uv run llm-graphrag-kg query "GraphRAG 如何结合知识图谱解决多跳推理问题？" --mode hybrid --provider mock --export-html
+
+# 7. 启动 Phase 2 Streamlit 一站式可视化核验工作台
+uv sync --extra viz --extra dev
+uv run --extra viz llm-graphrag-kg ui
 ```
 
 ## 隐私与提交流程

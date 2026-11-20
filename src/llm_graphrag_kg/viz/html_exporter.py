@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from html import escape
 from pathlib import Path
 
 from pyvis.network import Network
@@ -40,23 +41,23 @@ def _pick_color(entity_type: str, community_id: int | None, color_by: str) -> st
     return TYPE_PALETTE.get(entity_type, "#6C8EBF")
 
 
-def export_pyvis_html(
+def render_pyvis_html(
     graph_store: BaseGraphStore,
-    output_path: Path,
     *,
     vector_store: BaseVectorStore | None = None,
     color_by: str = "type",
     physics_enabled: bool = True,
     trace: SubgraphTrace | None = None,
+    allowed_entity_ids: set[str] | None = None,
+    height: str = "780px",
     title: str = "LLM-GraphRAG-KG Interactive Verification View",
-) -> Path:
-    """Render an interactive Vis.js HTML graph with provenance tooltips and optional trace highlight."""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+) -> str:
+    """Render an interactive Vis.js HTML string with provenance tooltips and optional trace highlight."""
     nx_graph = graph_store.to_networkx()
     undirected = nx_graph.to_undirected()
 
     net = Network(
-        height="780px",
+        height=height,
         width="100%",
         directed=True,
         bgcolor="#111827",
@@ -70,7 +71,12 @@ def export_pyvis_html(
     active_rel_set = set(trace.relation_ids) if trace else set()
     has_trace = bool(seed_set or expanded_set)
 
-    for entity in graph_store.get_all_entities():
+    entities = graph_store.get_all_entities()
+    if allowed_entity_ids is not None:
+        entities = [e for e in entities if e.entity_id in allowed_entity_ids]
+    included_ids = {e.entity_id for e in entities}
+
+    for entity in entities:
         degree = int(undirected.degree(entity.entity_id)) if entity.entity_id in undirected else 0
         size = 16 + min(degree * 4, 28)
 
@@ -131,8 +137,9 @@ def export_pyvis_html(
             borderWidth=border_width,
         )
 
+    rendered_edges = 0
     for rel in graph_store.get_all_relations():
-        if rel.source_id not in nx_graph or rel.target_id not in nx_graph:
+        if rel.source_id not in included_ids or rel.target_id not in included_ids:
             continue
 
         is_active = rel.relation_id in active_rel_set
@@ -156,6 +163,7 @@ def export_pyvis_html(
             width=width,
             arrows="to",
         )
+        rendered_edges += 1
 
     net.set_options(
         """
@@ -181,13 +189,13 @@ def export_pyvis_html(
     )
 
     html = net.generate_html(notebook=False)
+    safe_title = escape(title)
     banner = (
         f'<div style="font-family:sans-serif;padding:10px 16px;background:#0F172A;color:#F8FAFC;'
         f'border-bottom:1px solid #334155;">'
-        f'<strong>{title}</strong> '
+        f"<strong>{safe_title}</strong> "
         f'<span style="color:#94A3B8;font-size:13px;margin-left:12px;">'
-        f'ColorBy={color_by} | Nodes={len(graph_store.get_all_entities())} | '
-        f'Edges={len(graph_store.get_all_relations())}'
+        f"ColorBy={escape(color_by)} | Nodes={len(entities)} | Edges={rendered_edges}"
         + (
             f" | Trace Highlight: Seeds={len(seed_set)}, Subgraph={len(expanded_set)}"
             if has_trace
@@ -195,6 +203,32 @@ def export_pyvis_html(
         )
         + "</span></div>"
     )
-    html = html.replace("<body>", f"<body>\n{banner}", 1)
+    return html.replace("<body>", f"<body>\n{banner}", 1)
+
+
+def export_pyvis_html(
+    graph_store: BaseGraphStore,
+    output_path: Path,
+    *,
+    vector_store: BaseVectorStore | None = None,
+    color_by: str = "type",
+    physics_enabled: bool = True,
+    trace: SubgraphTrace | None = None,
+    allowed_entity_ids: set[str] | None = None,
+    height: str = "780px",
+    title: str = "LLM-GraphRAG-KG Interactive Verification View",
+) -> Path:
+    """Write interactive Vis.js HTML graph to disk."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    html = render_pyvis_html(
+        graph_store,
+        vector_store=vector_store,
+        color_by=color_by,
+        physics_enabled=physics_enabled,
+        trace=trace,
+        allowed_entity_ids=allowed_entity_ids,
+        height=height,
+        title=title,
+    )
     output_path.write_text(html, encoding="utf-8")
     return output_path

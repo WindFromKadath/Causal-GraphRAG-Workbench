@@ -6,6 +6,19 @@
 
 ---
 
+## [2026-11-20] Phase 2 - Streamlit 一站式可视化内容核验工作台
+- **提交类型**：`feat`
+- **变更背景**：面向零经验用户降低 GraphRAG + KG 调试门槛，在 Phase 1 静态导出基础上构建本地交互式核验工作台，实现“切片 → 实体与三元组溯源 → 社区聚类 → 实时问答与检索子图高亮”全流程同屏核验。
+- **主要修改**：
+  - 重构 `src/llm_graphrag_kg/viz/html_exporter.py`，抽离 `render_pyvis_html()` 复用渲染接口，支持按实体子集过滤并对标题执行 HTML 转义防护。
+  - 新增纯 Python 数据准备与溯源辅助层 `src/llm_graphrag_kg/viz/workbench_data.py`（切片、实体、三元组、社区表格构造、多维筛选与原文切片反查）。
+  - 新增 Streamlit 核验工作台 `src/llm_graphrag_kg/viz/app.py`（脱敏配置侧边栏、连通性检测、一键建图/导出、5 大核验标签页与问答检索子图实时高亮）。
+  - 在 `src/llm_graphrag_kg/cli.py` 中新增 `llm-graphrag-kg ui` 一键启动命令，同步更新 `README.md` 与单元测试 `tests/test_workbench.py`。
+- **验证方式**：通过 `uv sync --extra viz --extra dev`、`ruff check`、`pytest -v` 与 Streamlit `AppTest` 无头渲染验证。
+- **隐私与迁移自检**：侧边栏配置预览强制调用 `redacted_summary()` 隐藏密钥；已通过 `privacy_check.py --staged --require-changelog`，无密钥、本地路径或运行产物入库。
+
+---
+
 ## [2026-11-20] Phase 1 - LLM + GraphRAG + KG 核心闭环与 PyVis/GraphML 可视化核验
 - **提交类型**：`feat`
 - **变更背景**：在 Phase 0 隐私与工程基线之上，落地分层解耦的 LLM + GraphRAG + 知识图谱最小可行闭环（MVP）与第一阶段可视化核验工具。
