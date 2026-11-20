@@ -1,0 +1,59 @@
+# LLM-GraphRAG-KG
+
+一个面向初学者友好、同时具备平滑迁移能力的 **LLM + GraphRAG + 知识图谱（KG）** 基础 Python 框架，使用 `uv` 进行环境管理，内置**可视化内容核验**与**面向 GitHub 的隐私保护机制**。
+
+## 核心特性
+
+- **分层解耦架构（Migration-Ready）**：核心管线仅依赖 `Protocol` 抽象接口，默认零外部数据库依赖（`NetworkX` + 本地向量存储），后续可平滑替换至 Neo4j / 专用向量库。
+- **多模型兼容**：统一采用 OpenAI-compatible 协议，通过 `.env` 一键切换云端大模型 API、本机 Magpie / Ollama / vLLM 等本地模型服务，亦内置离线 `mock` 模式用于零成本调试与自动化测试。
+- **可视化内容核验**：
+  - Phase 1：自动生成图谱质量审计报告（Markdown/CSV）、标准 `.graphml`（兼容 Gephi/Cytoscape）、以及 `PyVis` 单文件交互式 HTML 图谱（支持悬停原文溯源与**问答检索子图高亮**）。
+  - Phase 2（规划中）：基于 `Streamlit` 的一站式本地可视化核验工作台。
+- **隐私与项目管理规范**：
+  - 严格隔离代码、配置、脱敏示例数据（`data/sample/`）与私有运行数据（`data/private/`、`storage/`、`outputs/`）。
+  - 每次 Git 提交前自动执行隐私与修改日志（`CHANGELOG.md`）检查。
+
+## 目录结构
+
+```text
+LLM-GraphRAG-KG/
+├── .env.example          # 环境变量模板（复制为 .env 后填入实际配置）
+├── CHANGELOG.md          # 修改日志（每次 Git 提交同步更新）
+├── configs/default.yaml  # 非敏感默认运行参数
+├── data/sample/          # 公开脱敏示例语料
+├── scripts/              # 隐私与提交规范检查工具
+├── src/llm_graphrag_kg/  # 核心框架源码
+└── tests/                # 自动化测试套件
+```
+
+## 快速开始（基于 `uv`）
+
+```bash
+# 1. 安装核心与开发依赖
+uv sync --extra dev
+
+# 2. 复制环境变量模板（可选：如需连接本地 Magpie/Ollama 或云端 API）
+cp .env.example .env
+
+# 3. 检查本地模型或 API 连通性
+uv run llm-graphrag-kg check-llm
+
+# 4. 使用示例语料构建知识图谱与向量索引（离线演示可加 --provider mock）
+uv run llm-graphrag-kg build --input data/sample --provider mock
+
+# 5. 查看图谱质量审计报告 & 导出 PyVis 交互式 HTML / GraphML
+uv run llm-graphrag-kg audit
+uv run llm-graphrag-kg export-viz
+
+# 6. 执行 GraphRAG 问答并导出带检索子图高亮的交互式核验网页
+uv run llm-graphrag-kg query "GraphRAG 如何结合知识图谱解决多跳推理问题？" --mode hybrid --provider mock --export-html
+```
+
+## 隐私与提交流程
+
+- 严禁将 `.env`、`.vscode/`、`data/private/`、`storage/`、`outputs/` 提交至 Git。
+- 每次提交前，请同步更新 [CHANGELOG.md](CHANGELOG.md)，并运行：
+
+```bash
+uv run llm-graphrag-kg privacy-check --staged --require-changelog
+```

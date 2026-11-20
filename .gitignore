@@ -1,0 +1,44 @@
+# Python-generated files
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+wheels/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE & Editor (prevent leaking local machine paths/preferences)
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Secrets & local overrides (NEVER commit)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*secret*
+configs/*.local.yaml
+configs/*.local.yml
+
+# Private data, runtime storage & generated outputs (NEVER commit)
+data/private/
+data/raw/
+storage/
+outputs/
+logs/
+*.log
+*.db
+*.sqlite
+*.sqlite3

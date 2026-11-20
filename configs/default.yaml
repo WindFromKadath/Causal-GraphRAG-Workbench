@@ -1,0 +1,41 @@
+# Non-sensitive default runtime configuration.
+# Paths are relative to the project root so the project can be migrated cleanly.
+
+paths:
+  input_dir: "data/sample"
+  storage_dir: "storage"
+  output_dir: "outputs"
+
+chunking:
+  chunk_size: 400
+  chunk_overlap: 60
+
+extraction:
+  temperature: 0.1
+  max_entities_per_chunk: 15
+  entity_types:
+    - Concept
+    - Technology
+    - Method
+    - Component
+    - Organization
+    - Person
+    - Document
+    - Metric
+
+community:
+  resolution: 1.0
+  seed: 42
+  summarize_with_llm: false
+
+retrieval:
+  default_mode: "hybrid" # local | global | hybrid
+  top_k_chunks: 4
+  top_k_entities: 5
+  k_hops: 1
+  top_k_communities: 3
+  temperature: 0.2
+
+visualization:
+  default_color_by: "type" # type | community
+  physics_enabled: true

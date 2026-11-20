@@ -1,0 +1,48 @@
+[project]
+name = "llm-graphrag-kg"
+version = "0.1.0"
+description = "A modular, migration-ready Python framework for LLM + GraphRAG + Knowledge Graph with visual verification and privacy safeguards."
+readme = "README.md"
+authors = [
+    { name = "WindFromKadath" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "networkx>=3.3",
+    "numpy>=2.0",
+    "openai>=1.40.0",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.4.0",
+    "pyvis>=0.3.2",
+    "pyyaml>=6.0.2",
+    "rich>=13.7.0",
+    "typer>=0.12.5",
+]
+
+[project.optional-dependencies]
+viz = [
+    "pandas>=2.2.0",
+    "streamlit>=1.38.0",
+]
+dev = [
+    "pytest>=8.3.0",
+    "ruff>=0.6.0",
+]
+
+[project.scripts]
+llm-graphrag-kg = "llm_graphrag_kg.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
