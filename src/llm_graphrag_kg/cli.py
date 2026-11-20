@@ -1,0 +1,251 @@
+"""Command-line interface for LLM-GraphRAG-KG."""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+from typing import Annotated
+
+import typer
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+from llm_graphrag_kg.config import load_config
+from llm_graphrag_kg.pipelines.workflow import GraphRAGPipeline
+from llm_graphrag_kg.providers.factory import create_llm_client
+from llm_graphrag_kg.viz.audit_report import export_audit_artifacts
+from llm_graphrag_kg.viz.graphml_exporter import export_graphml
+from llm_graphrag_kg.viz.html_exporter import export_pyvis_html
+
+app = typer.Typer(
+    name="llm-graphrag-kg",
+    help="Modular LLM + GraphRAG + Knowledge Graph framework with visual verification.",
+    no_args_is_help=True,
+)
+console = Console()
+
+
+@app.command("check-llm")
+def check_llm(
+    provider: Annotated[
+        str | None, typer.Option(help="Override LLM provider: openai_compat | mock")
+    ] = None,
+    config_file: Annotated[Path | None, typer.Option(help="Optional YAML config path.")] = None,
+) -> None:
+    """Inspect active config (API keys redacted) and verify LLM endpoint connectivity."""
+    cfg = load_config(config_path=config_file, llm_provider_override=provider)
+    summary = cfg.redacted_summary()
+    table = Table(title="Active Configuration (Redacted)")
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value", style="white")
+    for k, v in summary.items():
+        table.add_row(k, str(v))
+    console.print(table)
+
+    client = create_llm_client(cfg)
+    ok, msg = client.health_check()
+    style = "green" if ok else "red"
+    console.print(Panel(msg, title="LLM Connectivity Check", border_style=style))
+    if not ok:
+        raise typer.Exit(code=1)
+
+
+@app.command("build")
+def build(
+    input_dir: Annotated[
+        Path | None, typer.Option("--input", help="Input documents directory.")
+    ] = None,
+    storage_dir: Annotated[
+        Path | None, typer.Option("--storage", help="Storage output directory.")
+    ] = None,
+    provider: Annotated[
+        str | None, typer.Option(help="Override LLM provider: openai_compat | mock")
+    ] = None,
+    embedder: Annotated[
+        str | None, typer.Option(help="Override embedding provider: local_hash | openai_compat")
+    ] = None,
+    summarize_communities: Annotated[
+        bool, typer.Option("--summarize-communities", help="Use LLM to summarize communities.")
+    ] = False,
+    config_file: Annotated[Path | None, typer.Option(help="Optional YAML config path.")] = None,
+) -> None:
+    """Run offline ingestion, KG extraction, community detection, and index persistence."""
+    cfg = load_config(
+        config_path=config_file,
+        llm_provider_override=provider,
+        embedding_provider_override=embedder,
+    )
+    pipeline = GraphRAGPipeline(cfg)
+    stats = pipeline.build(
+        input_dir=input_dir,
+        storage_dir=storage_dir,
+        summarize_communities=summarize_communities,
+    )
+
+    table = Table(title="Knowledge Graph Build Summary")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Documents", str(stats.doc_count))
+    table.add_row("Chunks", str(stats.chunk_count))
+    table.add_row("Entities", str(stats.entity_count))
+    table.add_row("Relations", str(stats.relation_count))
+    table.add_row("Communities", str(stats.community_count))
+    table.add_row("Connected Components", str(stats.connected_components))
+    table.add_row("Isolated Entities", str(len(stats.isolated_entities)))
+    console.print(table)
+
+
+@app.command("audit")
+def audit(
+    storage_dir: Annotated[
+        Path | None, typer.Option("--storage", help="Persisted storage dir.")
+    ] = None,
+    output_dir: Annotated[
+        Path | None, typer.Option("--output", help="Audit report output dir.")
+    ] = None,
+    config_file: Annotated[Path | None, typer.Option(help="Optional YAML config path.")] = None,
+) -> None:
+    """Generate Markdown + CSV quality verification reports for the persisted KG."""
+    cfg = load_config(config_path=config_file, llm_provider_override="mock")
+    pipeline = GraphRAGPipeline(cfg)
+    doc_count = pipeline.load(storage_dir)
+    out_dir = output_dir or cfg.output_path
+    stats, paths = export_audit_artifacts(
+        pipeline.graph_store,
+        pipeline.vector_store,
+        out_dir,
+        doc_count=doc_count,
+    )
+
+    console.print(
+        Panel(
+            f"Entities={stats.entity_count} | Relations={stats.relation_count} | "
+            f"Communities={stats.community_count} | Isolated={len(stats.isolated_entities)}\n"
+            f"Report: {paths['audit_report']}\n"
+            f"Entities CSV: {paths['entities_csv']}\n"
+            f"Relations CSV: {paths['relations_csv']}",
+            title="KG Audit Artifacts Exported",
+            border_style="green",
+        )
+    )
+
+
+@app.command("export-viz")
+def export_viz(
+    storage_dir: Annotated[
+        Path | None, typer.Option("--storage", help="Persisted storage dir.")
+    ] = None,
+    output_dir: Annotated[
+        Path | None, typer.Option("--output", help="Visualization output dir.")
+    ] = None,
+    color_by: Annotated[
+        str, typer.Option(help="Node color grouping: type | community")
+    ] = "type",
+    config_file: Annotated[Path | None, typer.Option(help="Optional YAML config path.")] = None,
+) -> None:
+    """Export interactive PyVis HTML graph and Gephi-compatible GraphML file."""
+    cfg = load_config(config_path=config_file, llm_provider_override="mock")
+    pipeline = GraphRAGPipeline(cfg)
+    pipeline.load(storage_dir)
+    out_dir = output_dir or cfg.output_path
+
+    html_path = export_pyvis_html(
+        pipeline.graph_store,
+        out_dir / "kg_graph.html",
+        vector_store=pipeline.vector_store,
+        color_by=color_by,
+        physics_enabled=cfg.visualization.physics_enabled,
+    )
+    graphml_path = export_graphml(pipeline.graph_store, out_dir / "kg_graph.graphml")
+
+    console.print(
+        Panel(
+            f"Interactive HTML: {html_path}\nGraphML (Gephi/Cytoscape): {graphml_path}",
+            title="Visualization Exported",
+            border_style="cyan",
+        )
+    )
+
+
+@app.command("query")
+def query(
+    question: Annotated[str, typer.Argument(help="Question to ask the GraphRAG system.")],
+    mode: Annotated[
+        str | None, typer.Option(help="Retrieval mode: local | global | hybrid")
+    ] = None,
+    provider: Annotated[
+        str | None, typer.Option(help="Override LLM provider: openai_compat | mock")
+    ] = None,
+    embedder: Annotated[
+        str | None, typer.Option(help="Override embedding provider: local_hash | openai_compat")
+    ] = None,
+    storage_dir: Annotated[
+        Path | None, typer.Option("--storage", help="Persisted storage dir.")
+    ] = None,
+    export_html: Annotated[
+        bool,
+        typer.Option("--export-html", help="Export PyVis HTML highlighting the retrieved subgraph."),
+    ] = False,
+    config_file: Annotated[Path | None, typer.Option(help="Optional YAML config path.")] = None,
+) -> None:
+    """Execute a GraphRAG query and inspect answer, subgraph trace, and source evidences."""
+    cfg = load_config(
+        config_path=config_file,
+        llm_provider_override=provider,
+        embedding_provider_override=embedder,
+    )
+    pipeline = GraphRAGPipeline(cfg)
+    result = pipeline.query(question, mode=mode, storage_dir=storage_dir)
+
+    console.print(Panel(result.answer, title=f"GraphRAG Answer ({result.mode})", border_style="green"))
+
+    trace_table = Table(title="Retrieval Trace")
+    trace_table.add_column("Dimension", style="cyan")
+    trace_table.add_column("Details", style="white")
+    trace_table.add_row("Seed Entities", ", ".join(result.metadata.get("seed_entity_names", [])) or "-")
+    trace_table.add_row("Expanded Subgraph Nodes", str(len(result.trace.expanded_entity_ids)))
+    trace_table.add_row("Subgraph Relations", str(len(result.trace.relation_ids)))
+    trace_table.add_row("Communities Used", str(result.trace.community_ids))
+    trace_table.add_row("Evidence Chunks", str(len(result.evidences)))
+    console.print(trace_table)
+
+    if export_html:
+        trace_html = export_pyvis_html(
+            pipeline.graph_store,
+            cfg.output_path / "query_trace.html",
+            vector_store=pipeline.vector_store,
+            color_by="community",
+            trace=result.trace,
+            title=f"Query Subgraph Trace ({result.mode}): {question[:60]}",
+        )
+        console.print(f"[cyan]Trace HTML exported to:[/cyan] {trace_html}")
+
+
+@app.command("privacy-check")
+def privacy_check(
+    staged: Annotated[bool, typer.Option("--staged", help="Scan only git staged files.")] = False,
+    require_changelog: Annotated[
+        bool, typer.Option("--require-changelog", help="Require CHANGELOG.md in scanned files.")
+    ] = False,
+) -> None:
+    """Run privacy & commit hygiene checks before committing or pushing to GitHub."""
+    script_path = Path.cwd() / "scripts" / "privacy_check.py"
+    if not script_path.is_file():
+        console.print("[red]scripts/privacy_check.py not found in current repository root.[/red]")
+        raise typer.Exit(code=1)
+
+    spec = importlib.util.spec_from_file_location("privacy_check", script_path)
+    if spec is None or spec.loader is None:
+        raise typer.Exit(code=1)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    argv: list[str] = []
+    if staged:
+        argv.append("--staged")
+    if require_changelog:
+        argv.append("--require-changelog")
+    exit_code = int(module.main(argv))
+    if exit_code != 0:
+        raise typer.Exit(code=exit_code)
