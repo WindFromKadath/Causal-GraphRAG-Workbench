@@ -194,6 +194,9 @@ class MockLLMClient:
         return f"[Mock 社区摘要] 该主题社区围绕 {preview} 等节点构建，聚合了相关的实体关系与上下文证据。"
 
     def _mock_answer(self, prompt: str) -> str:
+        if "Options:\n" in prompt and "Answer: <LETTER>" in prompt:
+            return self._mock_mcqa_answer(prompt)
+
         question = ""
         for line in prompt.splitlines():
             if line.startswith("Question:"):
@@ -211,3 +214,30 @@ class MockLLMClient:
             f"{summary_points}\n"
             "提示：当前处于离线 Mock 模式，切换到 `.env` 中的 OpenAI 兼容或本机 Magpie 模型即可获得完整语义推理回答。"
         )
+
+    @staticmethod
+    def _mock_mcqa_answer(prompt: str) -> str:
+        """Deterministic MCQA responder that uses provided KG/chunk context when present."""
+        opts_block = prompt.split("Options:\n", 1)[1].split("\n\n", 1)[0]
+        options: list[tuple[str, str]] = []
+        for line in opts_block.splitlines():
+            m = re.match(r"^\s*([A-J])\.\s*(.+?)\s*$", line)
+            if m:
+                options.append((m.group(1), m.group(2).lower()))
+        if not options:
+            return "Answer: A"
+
+        ctx = prompt.split("Question:", 1)[0].lower()
+        q_part = prompt.split("Question:", 1)[1].split("Options:", 1)[0].lower()
+        is_negative = any(
+            kw in q_part for kw in ("not ", "irrelevant", "least relevant", "except", "eliminate")
+        )
+
+        if "structured knowledge graph facts" in ctx or "retrieved text chunks" in ctx:
+            matches = [(oid, opt in ctx) for oid, opt in options]
+            target_flag = not is_negative
+            for oid, present in matches:
+                if present == target_flag:
+                    return f"[Mock MCQA] Matched from context.\nAnswer: {oid}"
+
+        return f"[Mock MCQA] Fallback guess.\nAnswer: {options[0][0]}"

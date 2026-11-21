@@ -1,0 +1,45 @@
+# Ontology-First configuration for IBM FailureSensorIQ (Apache-2.0) benchmark.
+# Raw dataset files are kept locally under data/private/ (gitignored).
+#
+# Ingest & build KG:
+#   uv run llm-graphrag-kg ingest-fsiq --source data/private/failuresensoriq/failuresensoriq.mapped.jsonl
+# Visualize & audit:
+#   uv run llm-graphrag-kg audit --config-file configs/failuresensoriq.yaml
+#   uv run llm-graphrag-kg export-viz --config-file configs/failuresensoriq.yaml --color-by type
+# Evaluate LLM-only vs Naive RAG vs GraphRAG+KG:
+#   uv run llm-graphrag-kg eval-fsiq --questions data/private/failuresensoriq/failuresensoriq_standard__all.jsonl --limit 20
+
+paths:
+  input_dir: "data/private/failuresensoriq/docs"
+  storage_dir: "storage/failuresensoriq"
+  output_dir: "outputs/failuresensoriq"
+
+chunking:
+  chunk_size: 600
+  chunk_overlap: 60
+
+extraction:
+  temperature: 0.1
+  max_entities_per_chunk: 20
+  entity_types:
+    - Equipment
+    - FailureMode
+    - FailureCategory
+    - SignalChannel
+
+community:
+  resolution: 1.0
+  seed: 42
+  summarize_with_llm: false
+
+retrieval:
+  default_mode: "hybrid"
+  top_k_chunks: 6
+  top_k_entities: 8
+  k_hops: 2
+  top_k_communities: 3
+  temperature: 0.1
+
+visualization:
+  default_color_by: "type"
+  physics_enabled: true

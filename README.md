@@ -21,7 +21,8 @@ LLM-GraphRAG-KG/
 ├── CHANGELOG.md                 # 修改日志（每次 Git 提交同步更新）
 ├── configs/
 │   ├── default.yaml             # 通用默认运行参数
-│   └── fault_diagnosis.yaml     # 工业工程部署与故障诊断领域本体配置
+│   ├── fault_diagnosis.yaml     # 工业工程部署与故障诊断领域本体配置
+│   └── failuresensoriq.yaml     # IBM FailureSensorIQ（Apache-2.0）标准数据集配置
 ├── data/
 │   ├── sample/                  # 轻量基础演示语料（3 篇）
 │   └── sample_fault_diagnosis/  # 工程部署与工业故障诊断脱敏语料（6 篇，含多跳因果链）
@@ -58,6 +59,12 @@ uv run llm-graphrag-kg query "GraphRAG 如何结合知识图谱解决多跳推�
 # 7. 启动 Phase 2 Streamlit 一站式可视化核验工作台
 uv sync --extra viz --extra dev
 uv run --extra viz llm-graphrag-kg ui
+
+# 8. 接入 IBM FailureSensorIQ（Apache-2.0）公开基准集并评测 LLM-only vs Naive RAG vs GraphRAG+KG
+uv run llm-graphrag-kg ingest-fsiq --source data/private/failuresensoriq/failuresensoriq.mapped.jsonl
+uv run llm-graphrag-kg audit --config-file configs/failuresensoriq.yaml
+uv run llm-graphrag-kg export-viz --config-file configs/failuresensoriq.yaml --color-by type
+uv run llm-graphrag-kg eval-fsiq --questions data/private/failuresensoriq/failuresensoriq_standard__all.jsonl --limit 20
 ```
 
 ## 隐私与提交流程

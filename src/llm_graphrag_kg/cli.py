@@ -13,6 +13,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from llm_graphrag_kg.adapters.failuresensoriq import (
+    build_failuresensoriq_kg,
+    evaluate_failuresensoriq,
+)
 from llm_graphrag_kg.config import load_config
 from llm_graphrag_kg.pipelines.workflow import GraphRAGPipeline
 from llm_graphrag_kg.providers.factory import create_llm_client
@@ -287,3 +291,93 @@ def ui(
         str(port),
     ]
     raise typer.Exit(code=subprocess.call(cmd))
+
+
+@app.command("ingest-fsiq")
+def ingest_fsiq(
+    source: Annotated[
+        Path,
+        typer.Option(
+            "--source",
+            help="Path to FailureSensorIQ JSONL (failuresensoriq.mapped.jsonl or all.jsonl).",
+        ),
+    ],
+    config_file: Annotated[
+        Path, typer.Option("--config-file", help="YAML config path.")
+    ] = Path("configs/failuresensoriq.yaml"),
+    summarize_communities: Annotated[
+        bool, typer.Option("--summarize-communities", help="Use LLM to summarize communities.")
+    ] = False,
+    provider: Annotated[
+        str | None, typer.Option(help="Override LLM provider: openai_compat | mock")
+    ] = None,
+) -> None:
+    """Ingest IBM FailureSensorIQ into an Ontology-First, ER-cleaned Knowledge Graph."""
+    cfg = load_config(config_path=config_file, llm_provider_override=provider)
+    stats = build_failuresensoriq_kg(
+        source_path=source,
+        config=cfg,
+        summarize_communities=summarize_communities,
+    )
+
+    table = Table(title="FailureSensorIQ Ingestion & ER Summary")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Source JSONL Rows", str(stats.source_records))
+    table.add_row("Gold Positive Triples", str(stats.gold_triples_loaded))
+    table.add_row("Industrial Assets (Equipment)", str(stats.asset_count))
+    table.add_row("Asset-Scoped FailureModes", str(stats.failure_mode_count))
+    table.add_row("Canonical FailureCategories", str(stats.failure_category_count))
+    table.add_row("Normalized Sensors (SignalChannel)", str(stats.sensor_count))
+    table.add_row("ER Typo/Alias Fixes Applied", str(stats.er_normalized_sensor_mentions))
+    table.add_row("Total Graph Entities", str(stats.audit.entity_count))
+    table.add_row("Total Graph Relations", str(stats.audit.relation_count))
+    table.add_row("Louvain Communities", str(stats.audit.community_count))
+    table.add_row("Connected Components", str(stats.audit.connected_components))
+    table.add_row("Isolated Entities", str(len(stats.audit.isolated_entities)))
+    console.print(table)
+
+
+@app.command("eval-fsiq")
+def eval_fsiq(
+    questions: Annotated[
+        Path,
+        typer.Option(
+            "--questions",
+            help="Path to FailureSensorIQ MCQA JSONL (e.g., failuresensoriq_standard__all.jsonl).",
+        ),
+    ],
+    config_file: Annotated[
+        Path, typer.Option("--config-file", help="YAML config path.")
+    ] = Path("configs/failuresensoriq.yaml"),
+    limit: Annotated[int, typer.Option(help="Number of stratified questions to evaluate.")] = 20,
+    seed: Annotated[int, typer.Option(help="Random seed for balanced sampling.")] = 42,
+    modes: Annotated[
+        str,
+        typer.Option(help="Comma-separated modes: llm_only,naive_rag,graphrag_kg"),
+    ] = "llm_only,naive_rag,graphrag_kg",
+    provider: Annotated[
+        str | None, typer.Option(help="Override LLM provider: openai_compat | mock")
+    ] = None,
+) -> None:
+    """Evaluate LLM-only vs Naive RAG vs GraphRAG+KG accuracy on FailureSensorIQ MCQA."""
+    cfg = load_config(config_path=config_file, llm_provider_override=provider)
+    mode_list = [m.strip() for m in modes.split(",") if m.strip()]
+    summary, report_path = evaluate_failuresensoriq(
+        questions_path=questions,
+        config=cfg,
+        limit=limit,
+        seed=seed,
+        modes=mode_list,
+    )
+
+    table = Table(
+        title=f"FailureSensorIQ Evaluation ({summary.total_questions} Qs | {summary.llm_model})"
+    )
+    table.add_column("Mode", style="cyan")
+    table.add_column("Correct / Total", style="white")
+    table.add_column("Accuracy", style="green")
+    for m in summary.modes:
+        table.add_row(m.mode, f"{m.correct} / {m.total}", f"{m.accuracy * 100:.1f}%")
+    console.print(table)
+    console.print(f"[cyan]Detailed report written to:[/cyan] {report_path}")

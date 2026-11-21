@@ -6,6 +6,18 @@
 
 ---
 
+## [2026-11-21] Phase 3.1 - IBM FailureSensorIQ 公开基准集适配、实体消歧与三基线量化评测
+- **提交类型**：`feat`
+- **变更背景**：从候选工业/核电数据集中选定基于 ISO 国际标准且 Apache-2.0 开源的 IBM FailureSensorIQ 作为主验证数据集，落地符合行业规范的 Ontology-First 建图、实体消歧（ER）与客观 MCQA 量化评测闭环。
+- **主要修改**：
+  - 新增 `src/llm_graphrag_kg/adapters/failuresensoriq.py`：实现 FailureSensorIQ 映射/原题 JSONL 适配器，构建四层规范本体（`Equipment --[HAS_FAILURE_MODE]--> FailureMode --[INSTANCE_OF]--> FailureCategory` 与 `FailureMode --[MONITORED_BY]--> SignalChannel`），按设备隔离失效模式防止跨设备传感污染，并通过显式实体消歧词表自动修正原始数据中的真实拼写误差（如 `temparature` → `temperature`、`coast down` → `coast down time`）且保留 `aliases`。
+  - 新增三基线分层评测框架 `evaluate_failuresensoriq()`：同题对比 `llm_only`（纯模型参数记忆）、`naive_rag`（纯向量切片）与 `graphrag_kg`（ISO 图谱多跳子图增强），导出 `eval_report.md` 与 `eval_results.json`。
+  - 新增场景配置 `configs/failuresensoriq.yaml`、CLI 命令 `ingest-fsiq` / `eval-fsiq`，扩展 `viz/html_exporter.py` 工业本体节点配色方案，并补充离线单元测试 `tests/test_failuresensoriq.py`。
+- **验证方式**：通过 `ruff check`、`pytest -v`（10/10 全部通过），并基于本地 `data/private/failuresensoriq/` 完整实跑 10 类设备建图、审计、可视化导出及本机 Ollama `gemma4:12b` 量化对比评测。
+- **隐私与迁移自检**：原始数据仅存于被 `.gitignore` 屏蔽的 `data/private/failuresensoriq/`，配置均采用相对路径；已通过 `privacy_check.py --staged --require-changelog`。
+
+---
+
 ## [2026-11-20] Docs & Domain Corpus - 工程部署指南、故障诊断手册与工业故障诊断脱敏语料库
 - **提交类型**：`docs` / `feat`
 - **变更背景**：扩充面向真实工程落地的内容量，补齐框架本身的工程部署与故障排查文档，同时新增高密度、跨文档多跳因果结构的“工业设备工程部署与故障诊断”公开脱敏语料集及专用配置。

@@ -19,6 +19,18 @@ TYPE_PALETTE: dict[str, str] = {
     "Person": "#72B7B2",
     "Document": "#EECA3B",
     "Metric": "#FF9DA6",
+    # Industrial fault diagnosis & FailureSensorIQ ontology types
+    "Equipment": "#3B82F6",
+    "FailureMode": "#EF4444",
+    "FailureCategory": "#F97316",
+    "SignalChannel": "#10B981",
+    "Sensor": "#10B981",
+    "Symptom": "#F59E0B",
+    "RootCause": "#DC2626",
+    "Algorithm": "#8B5CF6",
+    "DeploymentComponent": "#06B6D4",
+    "RemediationSOP": "#22C55E",
+    "Standard": "#EAB308",
 }
 
 COMMUNITY_PALETTE: list[str] = [
