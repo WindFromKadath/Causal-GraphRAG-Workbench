@@ -120,6 +120,12 @@ class MockLLMClient:
         max_tokens: int | None = None,
     ) -> str:
         _ = (system_prompt, temperature, max_tokens)
+        if "GRAPH_TOT_BRANCH_TASK" in prompt:
+            return self._mock_graph_tot_branch(prompt)
+        if "GRAPH_TOT_EVAL_TASK" in prompt:
+            return self._mock_graph_tot_eval(prompt)
+        if "GRAPH_TOT_SYNTH_TASK" in prompt:
+            return self._mock_graph_tot_synth(prompt)
         if "GRAPH_COT_TASK" in prompt:
             return self._mock_graph_cot(prompt)
         if "Options:\n" in prompt and (
@@ -221,6 +227,116 @@ class MockLLMClient:
             f"{summary_points}\n"
             "提示：当前处于离线 Mock 模式，切换到 `.env` 中的 OpenAI 兼容或本机 "
             "Ollama/vLLM 模型即可获得完整语义推理回答。"
+        )
+
+    @staticmethod
+    def _mock_graph_tot_branch(prompt: str) -> str:
+        """Deterministic Graph-ToT branch proposer extracting up to 3 real entities."""
+        matches = re.findall(r"-\s*\[(ent_[a-z0-9]+)\]\s*([^\(\n]+)", prompt)
+        branches = []
+        for idx, (eid, raw_name) in enumerate(matches[:3], start=1):
+            name = raw_name.strip()
+            branches.append(
+                {
+                    "branch_id": f"H{idx}",
+                    "hypothesis": f"候选假设 H{idx}：围绕实体 `{name}` 的根因路径",
+                    "target_entity_id": eid,
+                    "target_entity_name": name,
+                    "rationale": f"命中初始检索邻域节点 {eid}",
+                }
+            )
+        if not branches:
+            branches.append(
+                {
+                    "branch_id": "H1",
+                    "hypothesis": "默认单一假设",
+                    "target_entity_id": "",
+                    "target_entity_name": "",
+                    "rationale": "fallback",
+                }
+            )
+        return json.dumps({"branches": branches}, ensure_ascii=False)
+
+    @staticmethod
+    def _mock_graph_tot_eval(prompt: str) -> str:
+        """Deterministic Graph-ToT branch evaluator scoring branches & citing real IDs."""
+        sections = re.split(r"===\s*Branch\s+(H\d+):", prompt)
+        evaluations = []
+        # sections: [prefix, "H1", body1, "H2", body2, ...]
+        for idx in range(1, len(sections) - 1, 2):
+            bid = sections[idx].strip()
+            body = sections[idx + 1]
+            rids = list(dict.fromkeys(re.findall(r"\[(rel_[a-z0-9]+)\]", body)))[:3]
+            cids = list(dict.fromkeys(re.findall(r"([a-z0-9_]+::chunk_\d+)", body)))[:2]
+            rank = (idx - 1) // 2
+            score = max(0.3, round(0.92 - rank * 0.25, 2))
+            evaluations.append(
+                {
+                    "branch_id": bid,
+                    "semantic_score": score,
+                    "supporting_relations": rids,
+                    "supporting_chunks": cids,
+                    "contradicting_evidences": [] if rank == 0 else [f"{bid} 缺少关键多症状交叉印证"],
+                    "prune_reason": "" if rank == 0 else f"{bid} 证据匹配度低于主假设，予以剪枝",
+                }
+            )
+        return json.dumps({"evaluations": evaluations}, ensure_ascii=False)
+
+    @staticmethod
+    def _mock_graph_tot_synth(prompt: str) -> str:
+        """Deterministic Graph-ToT grounded synthesizer."""
+        ent_ids = list(dict.fromkeys(re.findall(r"\[(ent_[a-z0-9]+)\]", prompt)))
+        rel_ids = list(dict.fromkeys(re.findall(r"\[(rel_[a-z0-9]+)\]", prompt)))
+        chunk_ids = list(dict.fromkeys(re.findall(r"([a-z0-9_]+::chunk_\d+)", prompt)))
+        pruned_lines = [
+            ln.strip("- ").strip() for ln in prompt.splitlines() if "[PRUNED" in ln
+        ]
+        steps = [
+            {
+                "step_id": 1,
+                "stage": "anchor",
+                "claim": "确认胜出假设对应的核心图谱实体。",
+                "cited_entity_ids": ent_ids[:2],
+                "cited_relation_ids": [],
+                "cited_chunk_ids": [],
+            },
+            {
+                "step_id": 2,
+                "stage": "graph_traverse",
+                "claim": "沿胜出分支的真实图谱边验证多跳因果链。",
+                "cited_entity_ids": ent_ids[:2],
+                "cited_relation_ids": rel_ids[:2],
+                "cited_chunk_ids": [],
+            },
+            {
+                "step_id": 3,
+                "stage": "evidence_check",
+                "claim": "对照原文切片并结合 L2 折叠反证排除其余竞争假设。",
+                "cited_entity_ids": [],
+                "cited_relation_ids": [],
+                "cited_chunk_ids": chunk_ids[:2],
+            },
+            {
+                "step_id": 4,
+                "stage": "synthesis",
+                "claim": "输出经剪枝收敛的最终扎根结论。",
+                "cited_entity_ids": ent_ids[:1],
+                "cited_relation_ids": rel_ids[:1],
+                "cited_chunk_ids": chunk_ids[:1],
+            },
+        ]
+        cite = f" [{', '.join(chunk_ids[:2])}]" if chunk_ids else ""
+        return json.dumps(
+            {
+                "selected_branch_id": "H1",
+                "steps": steps,
+                "excluded_summary": pruned_lines[:3],
+                "final_answer": (
+                    f"[Mock Graph-ToT] 已完成多假设分支查图、反证剪枝与 L2 状态折叠，收敛主假设结论{cite}。"
+                ),
+                "confidence": 0.91,
+            },
+            ensure_ascii=False,
         )
 
     @staticmethod

@@ -8,15 +8,19 @@ from llm_graphrag_kg.reasoning.schema import (
     OptionGroundingItem,
     ReasoningResult,
     ReasoningStep,
+    ThoughtBranch,
 )
+from llm_graphrag_kg.reasoning.tot import GraphToTEngine
 
 __all__ = [
     "GraphCoTEngine",
     "GraphCoTOutput",
+    "GraphToTEngine",
     "GroundingAudit",
     "MCQACoTOutput",
     "OptionGroundingItem",
     "ReasoningResult",
     "ReasoningStep",
+    "ThoughtBranch",
     "audit_cot_grounding",
 ]

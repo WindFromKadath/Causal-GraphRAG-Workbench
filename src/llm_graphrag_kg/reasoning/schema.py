@@ -62,6 +62,58 @@ class GroundingAudit(BaseModel):
     passed: bool = False
 
 
+class ThoughtBranch(BaseModel):
+    """One explicit hypothesis branch in controllable Graph-ToT search."""
+
+    branch_id: str  # e.g., H1, H2, H3
+    hypothesis: str
+    target_entity_id: str = ""
+    target_entity_name: str = ""
+    depth: int = 1
+    supporting_relations: list[str] = Field(default_factory=list)
+    supporting_chunks: list[str] = Field(default_factory=list)
+    contradicting_evidences: list[str] = Field(default_factory=list)
+    deterministic_graph_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    semantic_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    status: Literal["active", "pruned", "selected"] = "active"
+    prune_reason: str = ""
+    folded_memory: str = ""
+
+
+class ToTBranchProposalItem(BaseModel):
+    branch_id: str
+    hypothesis: str
+    target_entity_id: str = ""
+    target_entity_name: str = ""
+    rationale: str = ""
+
+
+class ToTBranchProposalOutput(BaseModel):
+    branches: list[ToTBranchProposalItem] = Field(default_factory=list)
+
+
+class ToTBranchScoreItem(BaseModel):
+    branch_id: str
+    semantic_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    supporting_relations: list[str] = Field(default_factory=list)
+    supporting_chunks: list[str] = Field(default_factory=list)
+    contradicting_evidences: list[str] = Field(default_factory=list)
+    prune_reason: str = ""
+
+
+class ToTBranchEvaluationOutput(BaseModel):
+    evaluations: list[ToTBranchScoreItem] = Field(default_factory=list)
+
+
+class ToTSynthesisOutput(BaseModel):
+    selected_branch_id: str = ""
+    steps: list[ReasoningStep] = Field(default_factory=list)
+    excluded_summary: list[str] = Field(default_factory=list)
+    final_answer: str
+    confidence: float = Field(default=0.85, ge=0.0, le=1.0)
+
+
 class ReasoningResult(BaseModel):
     """Complete explicit reasoning trace returned by Graph-CoT / Graph-ToT engines."""
 
@@ -71,6 +123,8 @@ class ReasoningResult(BaseModel):
     final_answer: str
     confidence: float = 0.8
     steps: list[ReasoningStep] = Field(default_factory=list)
+    branches: list[ThoughtBranch] = Field(default_factory=list)
+    pruned_memories: list[str] = Field(default_factory=list)
     grounding_audit: GroundingAudit = Field(default_factory=GroundingAudit)
     compaction: dict[str, object] | None = None
     trace_ledger: dict[str, object] | None = None

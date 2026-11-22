@@ -172,6 +172,9 @@ class GraphRAGPipeline:
             enable_compact=use_compact,
             compactor=compactor,
             harness=harness,
+            tot_beam_width=self.config.reasoning.tot_beam_width,
+            tot_max_depth=self.config.reasoning.tot_max_depth,
+            tot_max_llm_calls=self.config.reasoning.tot_max_llm_calls,
         )
         return retriever.query(
             question,

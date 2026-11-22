@@ -23,6 +23,7 @@ from llm_graphrag_kg.core.schema import (
 from llm_graphrag_kg.harness.context_compactor import ContextCompactor
 from llm_graphrag_kg.harness.runtime import LLMHarness
 from llm_graphrag_kg.reasoning.cot import GraphCoTEngine
+from llm_graphrag_kg.reasoning.tot import GraphToTEngine
 
 QA_SYSTEM_PROMPT = (
     "You are a grounded GraphRAG assistant. Answer the user's question accurately using ONLY "
@@ -50,6 +51,9 @@ class GraphRAGRetriever:
         enable_compact: bool = True,
         compactor: ContextCompactor | None = None,
         harness: LLMHarness | None = None,
+        tot_beam_width: int = 3,
+        tot_max_depth: int = 2,
+        tot_max_llm_calls: int = 6,
     ) -> None:
         self.llm = llm
         self.embedder = embedder
@@ -63,6 +67,9 @@ class GraphRAGRetriever:
         self.enable_compact = enable_compact
         self.compactor = compactor or ContextCompactor()
         self.harness = harness or LLMHarness(llm, compactor=self.compactor)
+        self.tot_beam_width = tot_beam_width
+        self.tot_max_depth = tot_max_depth
+        self.tot_max_llm_calls = tot_max_llm_calls
 
     def query(
         self,
@@ -77,9 +84,9 @@ class GraphRAGRetriever:
                 f"Unsupported retrieval mode: {mode!r}. Use local | global | hybrid | ppr."
             )
         normalized_reasoning = reasoning.strip().lower()
-        if normalized_reasoning not in {"direct", "cot"}:
+        if normalized_reasoning not in {"direct", "cot", "tot"}:
             raise ValueError(
-                f"Unsupported reasoning paradigm: {reasoning!r}. Use direct | cot."
+                f"Unsupported reasoning paradigm: {reasoning!r}. Use direct | cot | tot."
             )
 
         seed_entities: list[Entity] = []
@@ -202,6 +209,29 @@ class GraphRAGRetriever:
             answer = cot_result.final_answer
             compaction_meta = cot_result.compaction
             reasoning_meta = cot_result.model_dump()
+        elif normalized_reasoning == "tot":
+            tot_engine = GraphToTEngine(
+                self.harness,
+                graph_store=self.graph_store,
+                vector_store=self.vector_store,
+                compactor=self.compactor,
+                enable_compact=self.enable_compact,
+                beam_width=self.tot_beam_width,
+                max_depth=self.tot_max_depth,
+                max_llm_calls=self.tot_max_llm_calls,
+                temperature=self.temperature,
+            )
+            tot_result, expanded_entities, sub_relations, evidences = tot_engine.run(
+                question=question,
+                seed_entity_ids=[e.entity_id for e in seed_entities],
+                entities=expanded_entities,
+                relations=sub_relations,
+                communities=selected_communities,
+                evidences=evidences,
+            )
+            answer = tot_result.final_answer
+            compaction_meta = tot_result.compaction
+            reasoning_meta = tot_result.model_dump()
         else:
             if self.enable_compact:
                 compacted = self.compactor.compact_graphrag_context(

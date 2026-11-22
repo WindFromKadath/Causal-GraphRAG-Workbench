@@ -20,6 +20,10 @@ from llm_graphrag_kg.adapters.failuresensoriq import (
     plan_failuresensoriq_stress_suite,
     run_failuresensoriq_stress_suite,
 )
+from llm_graphrag_kg.adapters.graphrag_bench import (
+    evaluate_graphrag_bench,
+    ingest_graphrag_bench_corpus,
+)
 from llm_graphrag_kg.config import load_config
 from llm_graphrag_kg.pipelines.workflow import GraphRAGPipeline
 from llm_graphrag_kg.providers.factory import create_llm_client
@@ -184,7 +188,7 @@ def query(
         str | None, typer.Option(help="Retrieval mode: local | global | hybrid | ppr")
     ] = None,
     reasoning: Annotated[
-        str | None, typer.Option(help="Reasoning paradigm: direct | cot")
+        str | None, typer.Option(help="Reasoning paradigm: direct | cot | tot")
     ] = None,
     provider: Annotated[
         str | None, typer.Option(help="Override LLM provider: openai_compat | mock")
@@ -221,8 +225,8 @@ def query(
     eff_reasoning = (reasoning or cfg.reasoning.default_paradigm).strip().lower()
     if think is not None:
         cfg.env.llm_think = think
-    elif eff_reasoning == "cot" and cfg.env.llm_think is None:
-        # Stage 2 design: replace black-box implicit thinking with explicit structured Graph-CoT
+    elif eff_reasoning in {"cot", "tot"} and cfg.env.llm_think is None:
+        # Stage 2 design: replace black-box implicit thinking with explicit structured Graph-CoT/ToT
         cfg.env.llm_think = False
     pipeline = GraphRAGPipeline(cfg)
     result = pipeline.query(
@@ -270,6 +274,27 @@ def query(
                 f"ungrounded={len(audit_data.get('ungrounded_citations', []))})",
             )
     console.print(trace_table)
+
+    if isinstance(reasoning_data, dict) and reasoning_data.get("branches"):
+        tot_table = Table(title="Explicit Graph-ToT Hypothesis Branches")
+        tot_table.add_column("ID", style="cyan")
+        tot_table.add_column("Status", style="magenta")
+        tot_table.add_column("Score", style="yellow")
+        tot_table.add_column("Hypothesis & Target Entity", style="white")
+        tot_table.add_column("Prune / Counter-Evidence", style="dim")
+        for br in reasoning_data["branches"]:
+            st_val = str(br.get("status", "active"))
+            st_fmt = "[green]SELECTED[/green]" if st_val == "selected" else "[dim]PRUNED[/dim]"
+            score_str = (
+                f"{br.get('score', 0.0):.2f} "
+                f"(G:{br.get('deterministic_graph_score', 0.0):.2f} "
+                f"S:{br.get('semantic_score', 0.0):.2f})"
+            )
+            target_label = br.get("target_entity_name") or br.get("target_entity_id") or "-"
+            hyp_txt = f"{br.get('hypothesis', '')}\n[dim]entity: {target_label}[/dim]"
+            prune_txt = br.get("prune_reason") or "-"
+            tot_table.add_row(str(br.get("branch_id", "")), st_fmt, score_str, hyp_txt, prune_txt)
+        console.print(tot_table)
 
     if isinstance(reasoning_data, dict) and reasoning_data.get("steps"):
         cot_table = Table(title="Explicit Graph-CoT Steps")
@@ -638,3 +663,121 @@ def stress_fsiq(
             )
     console.print(table)
     console.print(f"[cyan]Full stress report written to:[/cyan] {report_path}")
+
+
+@app.command("ingest-grb")
+def ingest_grb(
+    corpus: Annotated[
+        Path,
+        typer.Option(
+            "--corpus",
+            help="Path to GraphRAG-Bench Corpus JSON (e.g., data/private/graphrag_bench/Datasets/Corpus/medical.json).",
+        ),
+    ] = Path("data/private/graphrag_bench/Datasets/Corpus/medical.json"),
+    config_file: Annotated[
+        Path, typer.Option("--config-file", help="YAML config path.")
+    ] = Path("configs/graphrag_bench.yaml"),
+    max_chars: Annotated[
+        int, typer.Option("--max-chars", help="Corpus character budget (0 for full corpus).")
+    ] = 120_000,
+    fast_lexical: Annotated[
+        bool,
+        typer.Option(
+            "--fast-lexical/--llm-extract",
+            help="Use fast deterministic domain-phrase KG indexing or full LLM extraction.",
+        ),
+    ] = True,
+    provider: Annotated[
+        str | None, typer.Option(help="Override LLM provider when --llm-extract is set.")
+    ] = None,
+) -> None:
+    """Ingest GraphRAG-Bench corpus (zero question leakage) into KG & vector storage."""
+    cfg = load_config(config_path=config_file, llm_provider_override=provider)
+    stats = ingest_graphrag_bench_corpus(
+        corpus_path=corpus,
+        config=cfg,
+        max_chars=max_chars,
+        fast_lexical=fast_lexical,
+    )
+    console.print(
+        Panel(
+            f"Docs: {stats.doc_count} | Chunks: {stats.chunk_count}\n"
+            f"Entities: {stats.entity_count} | Relations: {stats.relation_count} | "
+            f"Communities: {stats.community_count}\n"
+            f"Storage: {cfg.storage_path}",
+            title="GraphRAG-Bench Corpus Ingested",
+            border_style="green",
+        )
+    )
+
+
+@app.command("eval-grb")
+def eval_grb(
+    questions: Annotated[
+        Path,
+        typer.Option(
+            "--questions",
+            help="Path to GraphRAG-Bench Questions JSON.",
+        ),
+    ] = Path("data/private/graphrag_bench/Datasets/Questions/medical_questions.json"),
+    config_file: Annotated[
+        Path, typer.Option("--config-file", help="YAML config path.")
+    ] = Path("configs/graphrag_bench.yaml"),
+    question_type: Annotated[
+        str,
+        typer.Option("--question-type", help="Filter: Complex Reasoning | Fact Retrieval | ALL"),
+    ] = "Complex Reasoning",
+    limit: Annotated[int, typer.Option(help="Number of questions to evaluate.")] = 10,
+    modes: Annotated[
+        str,
+        typer.Option(help="Comma-separated modes: naive_rag,hybrid_direct,ppr_cot,ppr_tot"),
+    ] = "naive_rag,hybrid_direct,ppr_cot,ppr_tot",
+    provider: Annotated[
+        str | None, typer.Option(help="Override LLM provider: ollama_native | openai_compat | mock")
+    ] = None,
+    think: Annotated[
+        bool | None,
+        typer.Option("--think/--no-think", help="Control Ollama thinking mode."),
+    ] = False,
+    num_ctx: Annotated[
+        int | None, typer.Option("--num-ctx", help="Override Ollama context length.")
+    ] = 32768,
+) -> None:
+    """Evaluate Naive RAG vs Hybrid vs PPR+CoT vs PPR+ToT on GraphRAG-Bench."""
+    cfg = load_config(config_path=config_file, llm_provider_override=provider)
+    if think is not None:
+        cfg.env.llm_think = think
+    if num_ctx is not None:
+        cfg.env.llm_num_ctx = num_ctx
+
+    mode_list = [m.strip() for m in modes.split(",") if m.strip()]
+    report, report_path = evaluate_graphrag_bench(
+        questions_path=questions,
+        config=cfg,
+        question_type=question_type,
+        limit=limit,
+        modes=mode_list,
+    )
+    table = Table(
+        title=f"GraphRAG-Bench ({report.question_type_filter} | {report.total_questions} Qs | {report.llm_model})"
+    )
+    table.add_column("Mode", style="cyan")
+    table.add_column("Token-F1", style="green")
+    table.add_column("ROUGE-L", style="yellow")
+    table.add_column("Evidence Cov", style="blue")
+    table.add_column("Grounding", style="magenta")
+    table.add_column("Calls", style="white")
+    table.add_column("Avg Latency", style="white")
+    for s in report.modes:
+        g_str = f"{s.avg_grounding_score * 100:.1f}%" if s.avg_grounding_score is not None else "-"
+        table.add_row(
+            s.mode,
+            f"{s.avg_token_f1 * 100:.1f}%",
+            f"{s.avg_rouge_l * 100:.1f}%",
+            f"{s.avg_evidence_coverage * 100:.1f}%",
+            g_str,
+            f"{s.avg_llm_calls:.1f}",
+            f"{s.avg_latency_seconds:.2f}s",
+        )
+    console.print(table)
+    console.print(f"[cyan]Report written to:[/cyan] {report_path}")

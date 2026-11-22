@@ -6,6 +6,22 @@
 
 ---
 
+## [2026-11-22] Stage 2.3 - 显性可控 Graph-ToT 引擎（ToG 范式 + L2 剪枝折叠）与 GraphRAG-Bench 多跳基准适配器
+- **提交类型**：`feat`
+- **变更背景**：落地 `docs/stage2_harness_reasoning_plan.md` 规划的 Stage 2.3，解决多症状并发工业诊断与高难多跳问答中“需要并行展开竞争假设、逐分支查图并用反证剪枝”的核心需求，并接入更高难度的 `GraphRAG-Bench (ICLR)` 医学多跳基准进行跨范式实证。
+- **主要修改**：
+  - 扩展 `src/llm_graphrag_kg/reasoning/schema.py` 并新增 `src/llm_graphrag_kg/reasoning/tot.py`（`GraphToTEngine`）：实现 4 阶段可控预算图谱思维树（**Branch 假设生成 → Ground 逐分支独立 k-hop 查图与确定性图谱打分 → Score & Prune 联合语义打分、反证剪枝与 `ContextCompactor.fold_state_l2` 剪枝分支状态折叠 → Compact & Synthesize 综合收敛 + `audit_cot_grounding` 忠实度门禁**），默认严格控制 3 次结构化 LLM 调用（上限 `max_llm_calls=6`）。
+  - 升级 `src/llm_graphrag_kg/pipelines/retriever.py`、`workflow.py`、`providers/llm/mock.py` 与 `cli.py`：全链路打通 `--reasoning tot`（`tot` 下自动关闭 Ollama 隐式思考），CLI 新增 **Explicit Graph-ToT Hypothesis Branches** 对比表展示胜出/剪枝状态、双维得分（图谱确定性得分 `G` + 语义得分 `S`）及剪枝反证依据。
+  - 新增高难多跳基准适配器 `src/llm_graphrag_kg/adapters/graphrag_bench.py`、配置 `configs/graphrag_bench.yaml` 及 CLI 命令 `ingest-grb` / `eval-grb`（严格零测试题泄漏建图，内置 Token-F1、ROUGE-L、证据覆盖率与 Grounding Score 自动化评测）。
+  - 新增单元测试 `tests/test_reasoning_tot.py`，更新 `docs/stage2_harness_reasoning_plan.md`。
+- **验证方式**：
+  - `ruff check` 0 告警，`pytest -v` **22/22 全部通过**。
+  - 本机 Ollama `gemma4:12b` 实跑多症状并发工业故障诊断（`--mode ppr --reasoning tot --compact`）：稳定展开 3 条竞争假设（准确选中 `H1: 轴系不对中 [0.86]`，剪枝 `H2: 滚动轴承外圈剥落` 与 `H3: 润滑系统 [0.61]` 并给出反证），三级压缩（L0+L1+L2）将上下文从 `3,716 → 740 tok (-80.1%)`，**`GroundingAudit` 4/4 步 100.0% 通过（0 编造引用）**。
+  - 本机 Ollama `gemma4:12b` 实跑 `GraphRAG-Bench (Complex Reasoning)` 四范式对比：`ppr_tot` 以 **Token-F1 16.1%、ROUGE-L 14.9%、证据覆盖率 52.8%、Grounding Score 100.0%** 全面领先 `naive_rag`（11.3% / 39.1%）、`hybrid_direct`（7.2% / 39.5%）与 `ppr_cot`（8.1% / 29.1%），平均严格收敛于 `3.0` 次调用。
+- **隐私与迁移自检**：`GraphRAG-Bench` 语料、索引与评测产物均隔离在 `.gitignore` 屏蔽的 `data/private/`、`storage/` 与 `outputs/`；已通过 `scripts/privacy_check.py --staged --require-changelog`。
+
+---
+
 ## [2026-11-22] Stage 2.2 - 显性 Graph-CoT 引擎、GroundingAudit 忠实度门禁、HippoRAG 风格 PPR 检索与 Scope-Aware L0 修复
 - **提交类型**：`feat`
 - **变更背景**：落地 Stage 2.2 显性结构化思维链（`Graph-CoT`）与确定性忠实度校验，同时将 Stage 2.1 全量审计定位的 4 项待修复项（封闭世界边界丢失、三态 Prompt、否定模板漏检、极简先验劫持）以及 GitHub 前沿调研中选定的 HippoRAG 风格 PPR 多跳扩散检索一并整合实现。
