@@ -6,6 +6,17 @@
 
 ---
 
+## [2026-11-22] Stage 2.1 Benchmark Report - 2,000 题四基线评测沉淀、差异法证审计与前沿路线同步
+- **提交类型**：`docs`
+- **变更背景**：完成 FailureSensorIQ 4 级难度集 × 每集 500 题 × 4 模式（累计 2,000 题 / 8,000 次本机 `gemma4:12b` 推理）大规模基准评测后，将量化指标、`raw` vs `compact` 逐题法证根因、并入 Stage 2.2 的待修复项以及 GitHub 高难基准/新范式调研沉淀入库并同步至云端仓库。
+- **主要修改**：
+  - 新增 `docs/benchmark_stage2_1_audit_and_roadmap.md`：记录完整四基线 Exact Match/Macro-F1、Pairwise Win/Loss 矩阵与 Token/耗时遥测（`L3` 500/500 满分且降本 67%/提速 ~1.9×）；量化定位 `L2_10_options` 差距根因（封闭世界 Asset Scope 丢失 + 二元 Prompt 误导占 89.2%，理论上限 94.4%–96.4%）；汇总 `IBM/AssetOpsBench`、`GraphRAG-Bench`、`STaRK` 与 `HippoRAG 2` / `OpenSPG KAG` / `PathRAG` / `ToG` 对标路线。
+  - 更新 `docs/stage2_harness_reasoning_plan.md` 与 `README.md`：标注 Stage 2.1 完成状态，并将 Scope-Aware L0 压缩、三态 Prompt、否定模板修复及 HippoRAG 风格 PPR 检索直接并入 Stage 2.2 交付范围。
+- **验证方式**：通过 `ruff check`、`pytest -v`（15/15 通过）与 `scripts/privacy_check.py --staged --require-changelog`。
+- **隐私与迁移自检**：仅提交脱敏汇总报告，原始数据与逐题 checkpoint 仍严格隔离在 `.gitignore` 屏蔽的 `data/private/` 与 `outputs/` 目录。
+
+---
+
 ## [2026-11-22] Benchmark Prep - 全量四基线评测就绪（`--limit 0`、逐题胜负差距矩阵与 `--dry-run` 预估）
 - **提交类型**：`feat`
 - **变更背景**：为开展大规模/全量 FailureSensorIQ 对比测试、精确量化 `llm_only` / `naive_rag` / `graphrag_kg_raw`（Stage 1）与 `graphrag_kg`（Stage 2.1 Compact+Harness）之间的真实差距，完善全量挂机评测与统计分析能力。

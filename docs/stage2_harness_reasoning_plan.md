@@ -142,9 +142,9 @@ uv run llm-graphrag-kg query "离心泵出现2倍频振动升高且电机电流�
 
 | 子阶段 | 交付内容 | 量化验收标准 |
 |---|---|---|
-| **Stage 2.1：Harness & Compact 底座** | `harness/context_compactor.py`（L0/L1/L2）+ `harness/runtime.py`（预算守卫、JSON 自愈、`TraceLedger`）+ 单元测试 | ① L0 锚点压缩后，重跑 FailureSensorIQ `L3_multi_answers`（100 题）Exact Match 从 **94.0%** 提升至 **≥ 98.0%**；<br>② 平均单题 Prompt Token 下降 **≥ 40%**，0 空回复 |
-| **Stage 2.2：显性 Graph-CoT 引擎** | `reasoning/schema.py` + `reasoning/cot.py` + `GroundingAudit` 忠实度门禁 + CLI `--reasoning cot` | ① 工业故障诊断多跳案例 100% 输出结构化分步推导；<br>② 每步均通过 `relation_id` / `chunk_id` 忠实度校验，无编造边 |
-| **Stage 2.3：显性 Graph-ToT 引擎** | `reasoning/tot.py`（Branch → Ground → Score & Prune → Compact → Synthesize）+ CLI `--reasoning tot` | ① 多症状并发案例稳定展开 2~3 条候选假设并准确剪枝错误假设；<br>② 本地 `gemma4:12b`（`think=False`）完整 ToT 推理总耗时 **< 15s**，严格不触发超时 |
+| **Stage 2.1：Harness & Compact 底座（已完成）** | `harness/context_compactor.py`（L0/L1/L2）+ `harness/runtime.py`（预算守卫、JSON 自愈、`TraceLedger`）+ 单元测试 + 2,000 题四基线压测审计（见 `docs/benchmark_stage2_1_audit_and_roadmap.md`） | ① 已达成：`L3_multi_answers`（500 题）Exact Match **100.0%（500/500）**，击败 `raw`（97.2%）；<br>② Prompt Token 下降 **~67%**、单题提速 **~1.9×**，8,000 次调用 **0 空回复** |
+| **Stage 2.2：显性 Graph-CoT 引擎 + 2.1 审计待修复项 + PPR 检索** | ① **并入 2.1 审计待修复项**：Scope-Aware L0 边界感知压缩（`Asset Domain Scope` + `In-Asset Unlinked` 差集 + 1 行 L1 Provenance）、三态 MCQA Prompt 规则、`_infer_relevancy_label` 否定词表补全；<br>② **显性 CoT 引擎**：`reasoning/schema.py` + `reasoning/cot.py` + `GroundingAudit` 忠实度门禁 + CLI `--reasoning cot`；<br>③ **HippoRAG 风格 PPR 检索**：`pipelines/retriever.py` 新增 `ppr` 多跳扩散模式 | ① `L2_10_options` Exact Match 从 **36.8%** 跃升至 **≥ 88%** 并显著反超 `raw`（49.4%）；`L1`/`L3`/`L4` 均保持 **≥ 99%**；<br>② 工业故障诊断多跳案例 100% 输出结构化分步推导并通过 `relation_id`/`chunk_id` 忠实度校验 |
+| **Stage 2.3：显性 Graph-ToT 引擎（ToG 范式）** | `reasoning/tot.py`（Branch → Ground → Score & Prune → Compact → Synthesize）+ CLI `--reasoning tot` + 更高难度基准（`GraphRAG-Bench` / `AssetOpsBench`）验证 | ① 多症状并发与多跳高难案例稳定展开 2~3 条候选假设并准确剪枝错误假设；<br>② 本地 `gemma4:12b`（`think=False`）完整 ToT 推理总耗时 **< 15s**，严格不触发超时 |
 | **Stage 2.4：工作台升级与大图质检** | Streamlit CoT/ToT 思维回放 + Compact 遥测 + Ego-Graph 聚焦 + `SHACL-lite` 全量质检 + `AppTest` 回归 | ① `ruff check` 0 告警、`pytest` 100% 通过（含 `AppTest`）；<br>② 通过 `privacy_check.py --staged --require-changelog` |
 
 ---
