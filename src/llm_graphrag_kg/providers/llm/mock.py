@@ -40,7 +40,7 @@ class MockLLMClient:
         ("BaseLLMClient", "Component"),
         ("BaseVectorStore", "Component"),
         ("OpenAI-compatible", "Technology"),
-        ("Magpie", "Technology"),
+        ("vLLM", "Technology"),
         ("Ollama", "Technology"),
         # Industrial engineering deployment & fault diagnosis terms
         ("离心泵机组", "Equipment"),
@@ -217,7 +217,8 @@ class MockLLMClient:
         return (
             f"[Mock 回答] 针对问题“{question}”，基于当前检索到的知识图谱子图与原文证据综合如下：\n"
             f"{summary_points}\n"
-            "提示：当前处于离线 Mock 模式，切换到 `.env` 中的 OpenAI 兼容或本机 Magpie 模型即可获得完整语义推理回答。"
+            "提示：当前处于离线 Mock 模式，切换到 `.env` 中的 OpenAI 兼容或本机 "
+            "Ollama/vLLM 模型即可获得完整语义推理回答。"
         )
 
     @staticmethod

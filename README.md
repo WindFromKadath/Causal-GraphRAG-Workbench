@@ -5,7 +5,7 @@
 ## 核心特性
 
 - **分层解耦架构（Migration-Ready）**：核心管线仅依赖 `Protocol` 抽象接口，默认零外部数据库依赖（`NetworkX` + 本地向量存储），后续可平滑替换至 Neo4j / 专用向量库。
-- **多模型兼容**：统一采用 OpenAI-compatible 协议，通过 `.env` 一键切换云端大模型 API、本机 Magpie / Ollama / vLLM 等本地模型服务，亦内置离线 `mock` 模式用于零成本调试与自动化测试。
+- **多模型兼容**：统一采用 OpenAI-compatible 协议与 Ollama 原生控制接口，通过 `.env` 一键切换云端大模型 API、本机 Ollama / vLLM / LM Studio 等本地模型服务，亦内置离线 `mock` 模式用于零成本调试与自动化测试。
 - **可视化内容核验**：
   - Phase 1：自动生成图谱质量审计报告（Markdown/CSV）、标准 `.graphml`（兼容 Gephi/Cytoscape）、以及 `PyVis` 单文件交互式 HTML 图谱（支持悬停原文溯源与**问答检索子图高亮**）。
   - Phase 2：基于 `Streamlit` 的一站式本地可视化核验工作台（同屏查看文档切片、过滤实体/三元组并反查原文、社区总览、实时提问与检索子图联动高亮）。
@@ -41,7 +41,7 @@ LLM-GraphRAG-KG/
 # 1. 安装核心与开发依赖
 uv sync --extra dev
 
-# 2. 复制环境变量模板（可选：如需连接本地 Magpie/Ollama 或云端 API）
+# 2. 复制环境变量模板（可选：如需连接本地 Ollama/vLLM 或云端 API）
 cp .env.example .env
 
 # 3. 检查本地模型或 API 连通性

@@ -12,7 +12,7 @@ from llm_graphrag_kg.core.schema import Community, Entity, Relation, TextChunk
 
 @runtime_checkable
 class BaseLLMClient(Protocol):
-    """Protocol for any LLM backend (OpenAI-compatible API, local Magpie/Ollama, or Mock)."""
+    """Protocol for any LLM backend (OpenAI-compatible API, local Ollama/vLLM, or Mock)."""
 
     def complete(
         self,

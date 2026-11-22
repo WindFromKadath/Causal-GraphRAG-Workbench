@@ -10,7 +10,7 @@
 
 | 部署阶段 | 推荐规模 | 模型服务 | 图存储 / 向量存储 | 运行形态 |
 |---|---|---|---|---|
-| **Stage 1：单机原型与核验** | < 500 篇文档 / < 2 万实体 | 本机 Ollama / Magpie / 云端 API | `NetworkXGraphStore` (JSON) + `LocalVectorStore` (NumPy) | CLI + 本地 Streamlit 核验台 |
+| **Stage 1：单机原型与核验** | < 500 篇文档 / < 2 万实体 | 本机 Ollama / vLLM / 云端 API | `NetworkXGraphStore` (JSON) + `LocalVectorStore` (NumPy) | CLI + 本地 Streamlit 核验台 |
 | **Stage 2：部门/局域网共享** | 500 ~ 5,000 篇文档 | 独立 GPU 服务器（Ollama / vLLM） | 持久化卷 + 定时增量重建（或迁移至 Kùzu / Neo4j） | Docker / systemd + 反向代理 + 定时任务 |
 | **Stage 3：生产级多业务系统** | > 5,000 篇文档 / 高并发 | vLLM 集群 / 企业级 API 网关 | Neo4j（实现 `BaseGraphStore`）+ Qdrant/Milvus（实现 `BaseVectorStore`） | API 微服务 + 监控告警 + 权限审计 |
 

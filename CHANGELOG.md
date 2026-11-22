@@ -6,6 +6,17 @@
 
 ---
 
+## [2026-11-22] Release Prep - 补充 MIT 开源协议、统一本地模型表述并完成 GitHub 推送前审核
+- **提交类型**：`chore`
+- **变更背景**：在首次公开推送至 GitHub 仓库前，补充 MIT 开源协议并对文档与代码注释中的本地模型示例名称做通用化收口。
+- **主要修改**：
+  - 新增 MIT `LICENSE` 文件并在 `pyproject.toml` 中声明 `license = { text = "MIT" }`。
+  - 将 `.env.example`、`README.md`、`docs/`、`data/sample/` 及源码注释中特定本地运行时示例名统一替换为通用的 `Ollama / vLLM / LM Studio` 表述。
+- **验证方式**：通过全量 `ruff check`、`pytest -v`（11/11 通过）与 `scripts/privacy_check.py --staged --require-changelog`。
+- **隐私与迁移自检**：已核查全部提交作者邮箱、仓库对象体积与敏感规则，无任何隐私泄露风险。
+
+---
+
 ## [2026-11-22] Stage 2 Plan - 记录第二阶段实现方案（LLM Harness + Compact + 显性 CoT/ToT）
 - **提交类型**：`docs`
 - **变更背景**：基于第一阶段 FailureSensorIQ 四级极限压测与本地 `gemma4:12b` 遥测诊断结果，正式确立并归档第二阶段演进方案，将“裸模型调用 + 单轮问答”升级为“Harness 驾驭 + 三级无损优先上下文压缩 + 显性 Graph-CoT / Graph-ToT 思维范式”。
@@ -71,7 +82,7 @@
 - **变更背景**：在 Phase 0 隐私与工程基线之上，落地分层解耦的 LLM + GraphRAG + 知识图谱最小可行闭环（MVP）与第一阶段可视化核验工具。
 - **主要修改**：
   - 新增核心领域模型与抽象协议：`src/llm_graphrag_kg/core/schema.py`、`interfaces.py` 与 `config.py`（支持 YAML 默认配置 + `.env` 密钥注入与日志脱敏）。
-  - 新增可插拔适配层：`providers/llm/`（`OpenAICompatLLMClient` 兼容云端 API 与本机 Magpie/Ollama，附 `MockLLMClient` 离线调试）、`providers/embedding/`（`OpenAICompatEmbeddingClient` + `LocalHashEmbeddingClient`）、`providers/storage/`（`NetworkXGraphStore` + `LocalVectorStore`）与工厂模块 `providers/factory.py`。
+  - 新增可插拔适配层：`providers/llm/`（`OpenAICompatLLMClient` 兼容云端 API 与本机 Ollama/vLLM，附 `MockLLMClient` 离线调试）、`providers/embedding/`（`OpenAICompatEmbeddingClient` + `LocalHashEmbeddingClient`）、`providers/storage/`（`NetworkXGraphStore` + `LocalVectorStore`）与工厂模块 `providers/factory.py`。
   - 新增完整业务管线：`pipelines/ingestion.py`（文档加载与带字符溯源切片）、`extraction.py`（实体关系抽取与去重融合）、`community.py`（Louvain 社区发现与摘要）、`retriever.py`（`local` / `global` / `hybrid` 三模式检索与子图追踪）及 `workflow.py`。
   - 新增 Phase 1 可视化与核验层：`viz/audit_report.py`（Markdown/CSV 质量审计）、`viz/html_exporter.py`（PyVis 单文件交互式 HTML 与检索子图高亮）、`viz/graphml_exporter.py`（Gephi/Cytoscape 兼容导出）。
   - 新增统一命令行入口 `src/llm_graphrag_kg/cli.py`（`check-llm` / `build` / `audit` / `export-viz` / `query` / `privacy-check`）、3 份公开脱敏示例语料 `data/sample/` 及自动化测试套件 `tests/`。
@@ -86,7 +97,7 @@
 - **主要修改**：
   - 完善 `.gitignore`，隔离 `.env`、`.vscode/`、`data/private/`、`storage/`、`outputs/` 等敏感与运行产物目录。
   - 脱敏 `pyproject.toml`（移除个人邮箱），配置核心依赖与 `[viz]` / `[dev]` 可选依赖分组。
-  - 新增脱敏环境变量模板 `.env.example`（兼容云端 API、本机 Magpie/Ollama OpenAI 兼容接口及离线 Mock 模式）与非敏感运行配置 `configs/default.yaml`。
+  - 新增脱敏环境变量模板 `.env.example`（兼容云端 API、本机 Ollama/vLLM OpenAI 兼容接口及离线 Mock 模式）与非敏感运行配置 `configs/default.yaml`。
   - 新增 `scripts/privacy_check.py` 隐私与提交规范检查脚本，并在本地配置 Git `pre-commit` 钩子自动拦截隐私泄露与遗漏修改日志的提交。
   - 初始化项目文档 `README.md` 与 `CHANGELOG.md`。
 - **验证方式**：执行 `uv sync` 锁文件同步与 `scripts/privacy_check.py --staged --require-changelog` 校验通过。

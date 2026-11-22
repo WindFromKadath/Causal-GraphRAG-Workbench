@@ -1,4 +1,4 @@
-"""LLM client adapters (OpenAI-compatible API / local Magpie / Ollama + offline Mock)."""
+"""LLM client adapters (OpenAI-compatible API / local Ollama / vLLM + offline Mock)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from openai import OpenAI
 
 
 class OpenAICompatLLMClient:
-    """Adapter for any OpenAI-compatible chat completion API (cloud or local Magpie/Ollama/vLLM)."""
+    """Adapter for any OpenAI-compatible chat completion API (cloud or local Ollama/vLLM)."""
 
     def __init__(
         self,

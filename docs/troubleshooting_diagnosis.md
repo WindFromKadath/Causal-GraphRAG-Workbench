@@ -26,7 +26,7 @@
   - `Failed to reach http://127.0.0.1:11434/v1: APIConnectionError`
   - `Connected ... Note: configured model 'xxx' was not in the listed IDs.`
 - **根因分析**：
-  1. Ollama / Magpie / vLLM 服务未启动，或监听端口与 `.env` 中 `GRAPHRAG_LLM_BASE_URL` 不一致。
+  1. Ollama / vLLM / LM Studio 服务未启动，或监听端口与 `.env` 中 `GRAPHRAG_LLM_BASE_URL` 不一致。
   2. `.env` 中 `GRAPHRAG_LLM_MODEL` 与服务端实际模型 tag 不一致（如误填 `qwen2.5:7b` 而本机仅安装了 `gemma4:12b`）。
   3. 本机代理环境变量（`HTTP_PROXY` / `HTTPS_PROXY`）劫持了 `127.0.0.1` 回环流量。
 - **诊断核验**：

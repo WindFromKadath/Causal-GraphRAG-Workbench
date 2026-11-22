@@ -3,6 +3,7 @@ name = "llm-graphrag-kg"
 version = "0.1.0"
 description = "A modular, migration-ready Python framework for LLM + GraphRAG + Knowledge Graph with visual verification and privacy safeguards."
 readme = "README.md"
+license = { text = "MIT" }
 authors = [
     { name = "WindFromKadath" }
 ]
