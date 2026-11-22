@@ -29,8 +29,9 @@ LLM-GraphRAG-KG/
 ├── docs/
 │   ├── engineering_deployment.md            # 工程部署、离线迁移与存储演进指南
 │   ├── troubleshooting_diagnosis.md         # 系统故障诊断与排障手册（FD-01 ~ FD-08）
-│   ├── stage2_harness_reasoning_plan.md     # 第二阶段规划：LLM Harness + Compact + 显性 CoT/ToT
-│   └── benchmark_stage2_1_audit_and_roadmap.md # Stage 2.1 全量四基线评测、差异法证与前沿对标
+│   ├── stage2_harness_reasoning_plan.md        # 第二阶段规划：LLM Harness + Compact + 显性 CoT/ToT
+│   ├── benchmark_stage2_1_audit_and_roadmap.md # Stage 2.1 全量四基线评测、差异法证与前沿对标
+│   └── benchmark_stage2_hard_datasets.md       # 第二阶段收尾：GraphRAG-Bench 双域高难评测与边界总结
 ├── scripts/                     # 隐私与提交规范检查工具
 ├── src/llm_graphrag_kg/         # 核心框架源码
 └── tests/                       # 自动化测试套件

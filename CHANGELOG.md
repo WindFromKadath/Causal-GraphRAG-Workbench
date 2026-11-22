@@ -6,6 +6,17 @@
 
 ---
 
+## [2026-11-22] Stage 2 Closeout - GraphRAG-Bench 双域高难基准归档、第二阶段收尾与云端同步
+- **提交类型**：`docs`
+- **变更背景**：完成 `GraphRAG-Bench` 双域（`Medical` 全量 1.05 MB + `Novel` 2 部长篇，共 50 题 / 300 次本地 `gemma4:12b` 推理）四范式深度基准评测，正式归档第二阶段收尾报告并准备将 Stage 2.4 至收尾的全部提交同步至 GitHub。
+- **主要修改**：
+  - 新增 `docs/benchmark_stage2_hard_datasets.md`：记录 Medical（1,528 切片 / 450 实体 / 6,522 边）与 Novel（702 切片 / 450 实体 / 2,683 边）四范式全量指标（`Ret EvRec` 严格单调跃升：Medical `47.7% → 60.9%`、Novel `29.5% → 47.1%`；`Ans EvCov` 由 `hybrid_direct` 与 `ppr_cot` 全面领跑，Grounding Score 达 `94%~100%`），沉淀“检索-生成剪刀差”三重法证归因（短拒答 Token-F1 陷阱、ToT 单胜剪枝对多面摘要的影响、`local_hash` 向量上限）及 Stage 3 演进输入。
+  - 更新 `README.md` 文档目录索引，并将 `src/llm_graphrag_kg/adapters/graphrag_bench.py` 的分层均衡抽样与单题异常隔离加固一并纳入提交。
+- **验证方式**：通过 `ruff check`（0 告警）、`pytest -q`（23/23 全部通过）与 `scripts/privacy_check.py --staged --require-changelog`。
+- **隐私与迁移自检**：所有外部数据集、图谱存储与运行断点均严格隔离在 `.gitignore` 目录，无隐私泄露风险。
+
+---
+
 ## [2026-11-22] Harder Benchmark Prep - 跨语言公平性修复与 GraphRAG-Bench 双域（Medical + Novel）断点评测就绪
 - **提交类型**：`feat`
 - **变更背景**：为开展 Stage 2 在更高难度多跳数据集（`GraphRAG-Bench` 医学全量与长篇叙事双域）上的公平四范式对比评测，修复 `direct` / `cot` 回答语言硬编码偏差，并补全双域建图、断点续跑与检索证据召回指标。

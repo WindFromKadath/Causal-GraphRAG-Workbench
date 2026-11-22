@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -354,6 +355,7 @@ def evaluate_graphrag_bench(
     question_type: str = "Complex Reasoning",
     source_filter: str | None = None,
     limit: int = 10,
+    seed: int = 42,
     modes: list[str] | None = None,
     resume: bool = True,
     progress_every: int = 5,
@@ -383,7 +385,31 @@ def evaluate_graphrag_bench(
         wanted_src = {s.strip() for s in source_filter.split(",") if s.strip()}
         filtered = [q for q in filtered if q.get("source") in wanted_src]
 
-    sampled = filtered[:limit] if limit > 0 else filtered
+    # Deterministic stratified sampling across (question_type, source) so multi-type evals stay balanced
+    if limit > 0 and limit < len(filtered):
+        rng = random.Random(seed)
+        buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for q in filtered:
+            key = f"{q.get('question_type', '')}|{q.get('source', '')}"
+            buckets[key].append(q)
+        bkeys = sorted(buckets.keys())
+        for bk in bkeys:
+            rng.shuffle(buckets[bk])
+        sampled: list[dict[str, Any]] = []
+        r_idx = 0
+        while len(sampled) < limit:
+            progressed = False
+            for bk in bkeys:
+                if r_idx < len(buckets[bk]):
+                    sampled.append(buckets[bk][r_idx])
+                    progressed = True
+                    if len(sampled) >= limit:
+                        break
+            if not progressed:
+                break
+            r_idx += 1
+    else:
+        sampled = filtered
 
     summaries: list[GRBModeSummary] = []
     all_outcomes: dict[str, list[GRBQuestionOutcome]] = {}
@@ -420,62 +446,82 @@ def evaluate_graphrag_bench(
                 tot_pruned = 0
                 llm_calls = 1
                 retrieved_text = ""
+                pred = ""
 
-                if mode == "naive_rag":
-                    q_vec = active_embedder.embed([qtext])[0]
-                    hits = pipeline.vector_store.search(q_vec, top_k=config.retrieval.top_k_chunks)
-                    ctx = "\n".join(f"- [{c.chunk_id}] {c.text}" for c, _ in hits)
-                    retrieved_text = " ".join(c.text for c, _ in hits)
-                    prompt = (
-                        f"Retrieved Text Chunks:\n{ctx}\n\n"
-                        f"Question: {qtext}\n\n"
-                        "Answer concisely and accurately in the same language as the question "
-                        "based ONLY on the retrieved chunks."
-                    )
-                    pred = active_llm.complete(prompt, temperature=0.1, json_mode=False)
-                elif mode == "hybrid_direct":
-                    res = pipeline.query(
-                        qtext, mode="hybrid", reasoning="direct", auto_load=False, enable_compact=True
-                    )
-                    pred = res.answer
-                    retrieved_text = " ".join(ev.text for ev in res.evidences)
-                    ledger = res.metadata.get("harness_ledger", {})
-                    if isinstance(ledger, dict):
-                        llm_calls = int(ledger.get("total_calls", 1))
-                elif mode == "ppr_cot":
-                    res = pipeline.query(
-                        qtext, mode="ppr", reasoning="cot", auto_load=False, enable_compact=True
-                    )
-                    pred = res.answer
-                    retrieved_text = " ".join(ev.text for ev in res.evidences)
-                    rm = res.metadata.get("reasoning", {})
-                    if isinstance(rm, dict):
-                        ga = rm.get("grounding_audit", {})
-                        if isinstance(ga, dict):
-                            g_score = float(ga.get("grounding_score", 0.0))
-                    ledger = res.metadata.get("harness_ledger", {})
-                    if isinstance(ledger, dict):
-                        llm_calls = int(ledger.get("total_calls", 1))
-                elif mode == "ppr_tot":
-                    res = pipeline.query(
-                        qtext, mode="ppr", reasoning="tot", auto_load=False, enable_compact=True
-                    )
-                    pred = res.answer
-                    retrieved_text = " ".join(ev.text for ev in res.evidences)
-                    rm = res.metadata.get("reasoning", {})
-                    if isinstance(rm, dict):
-                        ga = rm.get("grounding_audit", {})
-                        if isinstance(ga, dict):
-                            g_score = float(ga.get("grounding_score", 0.0))
-                        branches = rm.get("branches", [])
-                        if isinstance(branches, list):
-                            tot_branches = len(branches)
-                            tot_pruned = sum(1 for b in branches if b.get("status") == "pruned")
-                    ledger = res.metadata.get("harness_ledger", {})
-                    if isinstance(ledger, dict):
-                        llm_calls = int(ledger.get("total_calls", 1))
-                else:
-                    raise ValueError(f"Unsupported GraphRAG-Bench eval mode: {mode!r}")
+                try:
+                    if mode == "naive_rag":
+                        q_vec = active_embedder.embed([qtext])[0]
+                        hits = pipeline.vector_store.search(
+                            q_vec, top_k=config.retrieval.top_k_chunks
+                        )
+                        ctx = "\n".join(f"- [{c.chunk_id}] {c.text}" for c, _ in hits)
+                        retrieved_text = " ".join(c.text for c, _ in hits)
+                        prompt = (
+                            f"Retrieved Text Chunks:\n{ctx}\n\n"
+                            f"Question: {qtext}\n\n"
+                            "Answer concisely and accurately in the same language as the question "
+                            "based ONLY on the retrieved chunks."
+                        )
+                        pred = active_llm.complete(prompt, temperature=0.1, json_mode=False)
+                    elif mode == "hybrid_direct":
+                        res = pipeline.query(
+                            qtext,
+                            mode="hybrid",
+                            reasoning="direct",
+                            auto_load=False,
+                            enable_compact=True,
+                        )
+                        pred = res.answer
+                        retrieved_text = " ".join(ev.text for ev in res.evidences)
+                        ledger = res.metadata.get("harness_ledger", {})
+                        if isinstance(ledger, dict):
+                            llm_calls = int(ledger.get("total_calls", 1))
+                    elif mode == "ppr_cot":
+                        res = pipeline.query(
+                            qtext,
+                            mode="ppr",
+                            reasoning="cot",
+                            auto_load=False,
+                            enable_compact=True,
+                        )
+                        pred = res.answer
+                        retrieved_text = " ".join(ev.text for ev in res.evidences)
+                        rm = res.metadata.get("reasoning", {})
+                        if isinstance(rm, dict):
+                            ga = rm.get("grounding_audit", {})
+                            if isinstance(ga, dict):
+                                g_score = float(ga.get("grounding_score", 0.0))
+                        ledger = res.metadata.get("harness_ledger", {})
+                        if isinstance(ledger, dict):
+                            llm_calls = int(ledger.get("total_calls", 1))
+                    elif mode == "ppr_tot":
+                        res = pipeline.query(
+                            qtext,
+                            mode="ppr",
+                            reasoning="tot",
+                            auto_load=False,
+                            enable_compact=True,
+                        )
+                        pred = res.answer
+                        retrieved_text = " ".join(ev.text for ev in res.evidences)
+                        rm = res.metadata.get("reasoning", {})
+                        if isinstance(rm, dict):
+                            ga = rm.get("grounding_audit", {})
+                            if isinstance(ga, dict):
+                                g_score = float(ga.get("grounding_score", 0.0))
+                            branches = rm.get("branches", [])
+                            if isinstance(branches, list):
+                                tot_branches = len(branches)
+                                tot_pruned = sum(
+                                    1 for b in branches if b.get("status") == "pruned"
+                                )
+                        ledger = res.metadata.get("harness_ledger", {})
+                        if isinstance(ledger, dict):
+                            llm_calls = int(ledger.get("total_calls", 1))
+                    else:
+                        raise ValueError(f"Unsupported GraphRAG-Bench eval mode: {mode!r}")
+                except (ValueError, TimeoutError, OSError, ConnectionError) as exc:
+                    pred = f"[EVAL_FALLBACK_ERROR] {type(exc).__name__}: {exc}"
 
                 dt = round(time.perf_counter() - t0, 3)
                 outcome = GRBQuestionOutcome(
