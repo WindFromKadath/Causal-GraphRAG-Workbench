@@ -6,6 +6,23 @@
 
 ---
 
+## [2026-11-22] Stage 2.2 - 显性 Graph-CoT 引擎、GroundingAudit 忠实度门禁、HippoRAG 风格 PPR 检索与 Scope-Aware L0 修复
+- **提交类型**：`feat`
+- **变更背景**：落地 Stage 2.2 显性结构化思维链（`Graph-CoT`）与确定性忠实度校验，同时将 Stage 2.1 全量审计定位的 4 项待修复项（封闭世界边界丢失、三态 Prompt、否定模板漏检、极简先验劫持）以及 GitHub 前沿调研中选定的 HippoRAG 风格 PPR 多跳扩散检索一并整合实现。
+- **主要修改**：
+  - 新增 `src/llm_graphrag_kg/reasoning/`（`schema.py`、`cot.py`、`__init__.py`）：实现 4 阶段显性 `GraphCoTEngine`（`anchor → graph_traverse → evidence_check → synthesis`）、确定性 `audit_cot_grounding()`（逐条核验 `entity_id` / `relation_id` / `chunk_id` 是否真实存在于检索子图，拦截编造引用并触发单轮忠实度自愈修复）以及 MCQA 三态核对契约 `MCQACoTOutput`。
+  - 升级 `src/llm_graphrag_kg/pipelines/retriever.py` 与 `workflow.py`：新增无 `scipy` 依赖的纯 Python 幂迭代 **Personalized PageRank（`--mode ppr`）** 实体-段落异构图多跳扩散检索模式，并打通 `--reasoning direct|cot` 全链路。
+  - 升级 `src/llm_graphrag_kg/adapters/failuresensoriq.py`（合入全部 Stage 2.1 审计待修复项）：L0 压缩升级为 **Scope-Aware L0 Compaction**（同步提供 `Target Links` + `Other Valid ISO ... NOT linked/monitored` 资产域边界差集 + 1 行 L1 规范句强化）、升级三态精确匹配 Prompt 规则、补全 `_infer_relevancy_label` 否定词表，并支持 `--reasoning cot`。
+  - 升级 `src/llm_graphrag_kg/cli.py` 与 `providers/llm/mock.py`：`query` 支持 `--mode ppr`、`--reasoning cot` 与 `--think/--no-think`（`cot` 下默认关闭隐式思考），并输出 CoT 步骤表与 `GroundingAudit` 面板；`eval-fsiq` / `stress-fsiq` 新增 `--reasoning direct|cot`。
+  - 新增单元测试 `tests/test_reasoning_cot.py`。
+- **验证方式**：
+  - `ruff check` 0 告警，`pytest -v` **19/19 全部通过**。
+  - 本机 Ollama `gemma4:12b` 实跑工业故障诊断 `--mode ppr --reasoning cot --compact`：上下文从 `9489 → 2369 tok (-75.0%)`，**`GroundingAudit` 4/4 步 100.0% 通过（0 编造引用）**，精准定位 `轴系不对中 → 激光对中 SOP`。
+  - 本机 Ollama `gemma4:12b` 实跑 `FailureSensorIQ L2_10_options`（100 题，`seed=42`）：Scope-Aware L0 将 `graphrag_kg` Exact Match 从 **36.8% 一举跃升至 95.0%（95/100）**，大幅反超 `graphrag_kg_raw`（49.4%）**+45.6%** 且 0 重试 / 0 空回复；`--reasoning cot` 冒烟验证 10/10（100.0%）命中。
+- **隐私与迁移自检**：新下载的高难基准（`GraphRAG-Bench`、`IBM/AssetOpsBench`）均严格存于被 `.gitignore` 屏蔽的 `data/private/`；已通过 `scripts/privacy_check.py --staged --require-changelog`。
+
+---
+
 ## [2026-11-22] Stage 2.1 Benchmark Report - 2,000 题四基线评测沉淀、差异法证审计与前沿路线同步
 - **提交类型**：`docs`
 - **变更背景**：完成 FailureSensorIQ 4 级难度集 × 每集 500 题 × 4 模式（累计 2,000 题 / 8,000 次本机 `gemma4:12b` 推理）大规模基准评测后，将量化指标、`raw` vs `compact` 逐题法证根因、并入 Stage 2.2 的待修复项以及 GitHub 高难基准/新范式调研沉淀入库并同步至云端仓库。

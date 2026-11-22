@@ -41,6 +41,7 @@ from llm_graphrag_kg.providers.factory import (
     create_llm_client,
     create_vector_store,
 )
+from llm_graphrag_kg.reasoning.schema import MCQACoTOutput
 from llm_graphrag_kg.viz.audit_report import compute_audit_stats
 
 # Explicit, auditable Entity Resolution map fixing real typos/duplicates found in FailureSensorIQ.
@@ -571,15 +572,34 @@ def _format_mcqa_options(options: list[str], option_ids: list[str]) -> str:
     )
 
 
+NEGATIVE_QUESTION_KEYWORDS: tuple[str, ...] = (
+    "not ",
+    "irrelevant",
+    "least ",
+    "eliminate",
+    "except",
+    "unrelated",
+    "disregard",
+    "unimportant",
+    "non-relevant",
+    "exclude",
+    "inapplicable",
+    "not pertinent",
+    "not relevant",
+    "not useful",
+)
+
+
 def _infer_relevancy_label(row: dict[str, Any]) -> str:
     existing = str(row.get("relevancy", "")).strip()
     if existing:
         return existing
     q = str(row.get("question", "")).lower()
-    is_neg = any(
-        kw in q for kw in ("not ", "irrelevant", "least relevant", "eliminate", "except", "unrelated")
+    is_neg = any(kw in q for kw in NEGATIVE_QUESTION_KEYWORDS)
+    asks_sensor = any(
+        kw in q
+        for kw in ("which sensor", "which sensors", "sensor from", "sensor out", "sensor among")
     )
-    asks_sensor = any(kw in q for kw in ("which sensor", "which sensors", "sensor from", "sensor out"))
     polarity = "irrelevant" if is_neg else "relevant"
     target = "sensors_for_failure_mode" if asks_sensor else "failure_modes_for_sensor"
     return f"{polarity}_{target}"
@@ -653,10 +673,26 @@ def _build_graphrag_mcqa_context(
         ent_by_id = {e.entity_id: e for e in all_entities}
         asset_fm_id_set = {e.entity_id for e in asset_fms}
 
-        # Direction A: Question specifies FailureMode(s) -> return exact monitored sensors
+        # Precompute Asset Domain Scope (all valid FailureModes & SignalChannels on this asset)
+        asset_all_fm_labels: set[str] = {
+            str(e.metadata.get("failure_category", e.name)) for e in asset_fms
+        }
+        asset_all_sensor_map: dict[str, Entity] = {}
+        for rel in all_relations:
+            if rel.relation_type == "MONITORED_BY" and rel.source_id in asset_fm_id_set:
+                s_ent = ent_by_id.get(rel.target_id)
+                if s_ent is not None:
+                    asset_all_sensor_map[s_ent.name] = s_ent
+
+        def _fmt_sensor_with_aliases(s_ent: Entity) -> str:
+            alias_note = f" (aliases: {', '.join(s_ent.aliases)})" if s_ent.aliases else ""
+            return f"{s_ent.name}{alias_note}"
+
+        # Direction A: Question specifies FailureMode(s) -> Target Links + Asset Scope + L1 Evidence
         if matched_fms:
             target_fm_ids = {e.entity_id for e in matched_fms}
             fm_to_sensors: dict[str, list[str]] = defaultdict(list)
+            linked_sensor_names: set[str] = set()
             chunk_ids: list[str] = []
             for rel in all_relations:
                 if rel.relation_type == "MONITORED_BY" and rel.source_id in target_fm_ids:
@@ -664,8 +700,8 @@ def _build_graphrag_mcqa_context(
                     s_ent = ent_by_id.get(rel.target_id)
                     if fm_ent and s_ent:
                         fm_label = str(fm_ent.metadata.get("failure_category", fm_ent.name))
-                        alias_note = f" (aliases: {', '.join(s_ent.aliases)})" if s_ent.aliases else ""
-                        fm_to_sensors[fm_label].append(f"{s_ent.name}{alias_note}")
+                        fm_to_sensors[fm_label].append(_fmt_sensor_with_aliases(s_ent))
+                        linked_sensor_names.add(s_ent.name)
                         chunk_ids.extend(rel.source_chunk_ids)
 
             fact_lines = [
@@ -673,17 +709,44 @@ def _build_graphrag_mcqa_context(
                 f"--[MONITORED_BY]--> [{', '.join(sorted(set(sensors)))}]"
                 for fm_label, sensors in sorted(fm_to_sensors.items())
             ]
+            unlinked_sensors = sorted(
+                _fmt_sensor_with_aliases(s_ent)
+                for s_name, s_ent in asset_all_sensor_map.items()
+                if s_name not in linked_sensor_names
+            )
+            fm_names_joined = ", ".join(sorted(fm_to_sensors.keys()))
+            fact_lines.append(
+                f"- Asset `{resolved_asset}` | Other Valid ISO Sensors NOT linked to `{fm_names_joined}`: "
+                f"[{', '.join(unlinked_sensors) if unlinked_sensors else 'NONE'}]"
+            )
+
+            # L1 provenance reinforcement: attach 1 concise Diagnostic Rule line to resist prior override
+            unique_cids = list(dict.fromkeys(chunk_ids))
+            if unique_cids:
+                chunk_obj = vector_store.get_chunk(unique_cids[0])
+                if chunk_obj is not None:
+                    rule_line = next(
+                        (
+                            ln.strip()
+                            for ln in chunk_obj.text.splitlines()
+                            if "Diagnostic Rule:" in ln
+                        ),
+                        "",
+                    )
+                    if rule_line:
+                        fact_lines.append(f"- Provenance [{unique_cids[0]}]: {rule_line}")
+
             seed_names = [resolved_asset, *(e.name for e in matched_fms)]
-            expanded_count = 1 + len(matched_fms) + sum(len(set(v)) for v in fm_to_sensors.values())
-            cid_note = f" (chunks: {', '.join(dict.fromkeys(chunk_ids[:2]))})" if chunk_ids else ""
+            expanded_count = 1 + len(matched_fms) + len(asset_all_sensor_map)
+            cid_note = f" (chunks: {', '.join(unique_cids[:2])})" if unique_cids else ""
             ctx = (
                 f"Structured Knowledge Graph Facts for Asset `{resolved_asset}`{cid_note} "
-                "(L0 Anchor-Compacted ISO Complete List):\n"
+                "(L0 Scope-Aware ISO Complete List):\n"
                 + ("\n".join(fact_lines) if fact_lines else "- (no sensors linked)")
             )
             return ctx, seed_names, expanded_count
 
-        # Direction B: Question specifies SignalChannel(s) -> return exact asset FailureModes monitored by it
+        # Direction B: Question specifies SignalChannel(s) -> Target Links + Asset Scope
         if matched_sensors:
             target_s_ids = {e.entity_id for e in matched_sensors}
             sensor_to_fms: dict[str, list[str]] = defaultdict(list)
@@ -704,17 +767,23 @@ def _build_graphrag_mcqa_context(
             fact_lines = []
             for s_ent in matched_sensors:
                 fms_for_s = sorted(set(sensor_to_fms.get(s_ent.name, [])))
-                alias_note = f" (aliases: {', '.join(s_ent.aliases)})" if s_ent.aliases else ""
+                unlinked_fms = sorted(asset_all_fm_labels - set(fms_for_s))
+                s_label = _fmt_sensor_with_aliases(s_ent)
                 fact_lines.append(
-                    f"- Asset `{resolved_asset}` | SignalChannel `{s_ent.name}{alias_note}` "
+                    f"- Asset `{resolved_asset}` | SignalChannel `{s_label}` "
                     f"monitors ONLY these FailureModes: [{', '.join(fms_for_s) if fms_for_s else 'NONE'}]"
                 )
+                fact_lines.append(
+                    f"- Asset `{resolved_asset}` | Other Valid ISO FailureModes NOT monitored by `{s_ent.name}`: "
+                    f"[{', '.join(unlinked_fms) if unlinked_fms else 'NONE'}]"
+                )
+
             seed_names = [resolved_asset, *(e.name for e in matched_sensors)]
-            expanded_count = 1 + len(matched_sensors) + sum(len(set(v)) for v in sensor_to_fms.values())
+            expanded_count = 1 + len(matched_sensors) + len(asset_all_fm_labels)
             cid_note = f" (chunks: {', '.join(dict.fromkeys(chunk_ids[:3]))})" if chunk_ids else ""
             ctx = (
                 f"Structured Knowledge Graph Facts for Asset `{resolved_asset}`{cid_note} "
-                "(L0 Anchor-Compacted ISO Complete List):\n"
+                "(L0 Scope-Aware ISO Complete List):\n"
                 + "\n".join(fact_lines)
             )
             return ctx, seed_names, expanded_count
@@ -966,6 +1035,7 @@ def evaluate_failuresensoriq(
     modes: list[str] | None = None,
     concise_json: bool = True,
     compact_anchor_only: bool = True,
+    reasoning_paradigm: str = "direct",
     resume: bool = True,
     progress_every: int = 50,
     llm: BaseLLMClient | None = None,
@@ -1049,7 +1119,24 @@ def evaluate_failuresensoriq(
                 resolved_asset = explicit_asset or detect_asset_from_question(question, known_assets)
                 relevancy = _infer_relevancy_label(row)
 
-                if concise_json:
+                use_mcqa_cot = reasoning_paradigm.strip().lower() == "cot"
+                if use_mcqa_cot:
+                    mcqa_system = (
+                        "You are an auditable industrial reliability & fault diagnosis expert. "
+                        "First check every candidate option against the KG Scope-Aware facts "
+                        "(classify each as LINKED, IN_ASSET_UNLINKED, or OUT_OF_ASSET), "
+                        f"then return strictly JSON with exactly {expected_count} distinct option ID(s) in `answers`."
+                    )
+                    instruction = (
+                        "MCQA_COT_TASK\n"
+                        "Return compact strict JSON (do NOT repeat long option texts):\n"
+                        '{"target_anchor": "<entity>", "polarity": "relevant|irrelevant", '
+                        '"option_checks": [{"option_id": "<ID>", '
+                        '"kg_status": "LINKED|IN_ASSET_UNLINKED|OUT_OF_ASSET"}], '
+                        '"reasoning_summary": "<short rule check>", '
+                        f'"answers": [<exactly {expected_count} distinct option ID(s)>]}}'
+                    )
+                elif concise_json:
                     if expected_count == 1:
                         mcqa_system = (
                             "You are an industrial reliability & fault diagnosis expert. "
@@ -1101,12 +1188,28 @@ def evaluate_failuresensoriq(
                         active_embedder,
                         compact_anchor_only=use_compact_mode,
                     )
+                    if use_compact_mode and "(L0 Scope-Aware ISO Complete List)" in kg_ctx:
+                        kg_rule_note = (
+                            "Strict KG Grounding Rules (MUST follow over general intuition):\n"
+                            "1. For POSITIVE questions (most relevant / critical / strongest indication / "
+                            "best correlates): select ONLY option(s) matching the `MONITORED_BY` or "
+                            "`monitors ONLY` list by exact name or listed alias (do NOT equate unlisted "
+                            "lookalike terms such as `oil debris/ contamination` with `oil debris`).\n"
+                            "2. For NEGATIVE questions (irrelevant / not relevant / least useful / "
+                            "least likely / disregarded / unimportant / excluded): select ONLY option(s) "
+                            "from the `Other Valid ISO ... NOT linked/monitored` list — ignore "
+                            "out-of-asset distractor options that appear in NEITHER list."
+                        )
+                    else:
+                        kg_rule_note = (
+                            "Note: The KG list above enumerates the ISO-relevant links for the target "
+                            "entity on this asset. If the question asks for IRRELEVANT / NOT-relevant "
+                            "option(s), select the in-asset option(s) NOT linked to the target."
+                        )
                     prompt = (
                         f"{kg_ctx}\n\n"
                         f"Question: {question}\n\nOptions:\n{options_block}\n\n"
-                        "Note: The KG list above enumerates the ISO-relevant links for the target "
-                        "entity on this asset. If the question asks for IRRELEVANT / NOT-relevant "
-                        f"option(s), select the option(s) NOT listed in the KG.\n{instruction}"
+                        f"{kg_rule_note}\n{instruction}"
                     )
 
                 prompt_toks = estimate_tokens(prompt) + estimate_tokens(mcqa_system)
@@ -1117,11 +1220,15 @@ def evaluate_failuresensoriq(
 
                 for transient_try in range(2):
                     try:
-                        if concise_json:
+                        if use_mcqa_cot or concise_json:
                             valid_norm_set = set(norm_option_ids)
+                            target_schema: type[BaseModel] = (
+                                MCQACoTOutput if use_mcqa_cot else MCQAAnswerSchema
+                            )
+                            resp_max_tokens = 1024 if use_mcqa_cot else 96
 
                             def _validate_mcqa(
-                                model_out: MCQAAnswerSchema,
+                                model_out: Any,
                                 expected_n: int = expected_count,
                                 valid_set: set[str] = valid_norm_set,
                             ) -> str | None:
@@ -1147,11 +1254,11 @@ def evaluate_failuresensoriq(
                             try:
                                 parsed_obj, raw_resp = harness.run_structured(
                                     prompt,
-                                    MCQAAnswerSchema,
+                                    target_schema,
                                     step_name=f"fsiq_{mode}_q{qid}",
                                     system_prompt=mcqa_system,
                                     temperature=0.0,
-                                    max_tokens=96,
+                                    max_tokens=resp_max_tokens,
                                     extra_validator=_validate_mcqa,
                                 )
                                 pred_list = sorted(
@@ -1170,7 +1277,7 @@ def evaluate_failuresensoriq(
                                     system_prompt=mcqa_system,
                                     temperature=0.0,
                                     json_mode=True,
-                                    max_tokens=96,
+                                    max_tokens=resp_max_tokens,
                                 )
                                 pred_list = sorted(
                                     parse_option_answers(
@@ -1363,6 +1470,7 @@ def run_failuresensoriq_stress_suite(
     modes: list[str] | None = None,
     concise_json: bool = True,
     compact_anchor_only: bool = True,
+    reasoning_paradigm: str = "direct",
     resume: bool = True,
     progress_every: int = 50,
     suites: list[tuple[str, str]] | None = None,
@@ -1390,6 +1498,7 @@ def run_failuresensoriq_stress_suite(
             modes=modes,
             concise_json=concise_json,
             compact_anchor_only=compact_anchor_only,
+            reasoning_paradigm=reasoning_paradigm,
             resume=resume,
             progress_every=progress_every,
             llm=llm,

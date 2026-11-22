@@ -120,8 +120,10 @@ class MockLLMClient:
         max_tokens: int | None = None,
     ) -> str:
         _ = (system_prompt, temperature, max_tokens)
+        if "GRAPH_COT_TASK" in prompt:
+            return self._mock_graph_cot(prompt)
         if "Options:\n" in prompt and (
-            "Answer: <" in prompt or '{"answers":' in prompt
+            "Answer: <" in prompt or '{"answers":' in prompt or "MCQA_COT_TASK" in prompt
         ):
             return self._mock_mcqa_answer(prompt)
         if json_mode or "ENTITY_EXTRACTION_TASK" in prompt:
@@ -222,8 +224,68 @@ class MockLLMClient:
         )
 
     @staticmethod
+    def _mock_graph_cot(prompt: str) -> str:
+        """Deterministic grounded 4-step Graph-CoT JSON responder for offline verification."""
+        question = ""
+        for line in prompt.splitlines():
+            if line.startswith("Question:"):
+                question = line.removeprefix("Question:").strip()
+                break
+
+        ent_ids = list(dict.fromkeys(re.findall(r"\[(ent_[a-z0-9]+)\]", prompt)))
+        rel_ids = list(dict.fromkeys(re.findall(r"\[(rel_[a-z0-9]+)\]", prompt)))
+        chunk_ids = list(
+            dict.fromkeys(re.findall(r"([a-z0-9_]+::chunk_\d+)", prompt))
+        )
+
+        steps = [
+            {
+                "step_id": 1,
+                "stage": "anchor",
+                "claim": f"定位问题核心锚点实体（共命中 {len(ent_ids)} 个图谱实体）。",
+                "cited_entity_ids": ent_ids[:3],
+                "cited_relation_ids": [],
+                "cited_chunk_ids": [],
+            },
+            {
+                "step_id": 2,
+                "stage": "graph_traverse",
+                "claim": f"沿知识图谱显性边展开多跳关联路径（共引用 {len(rel_ids[:3])} 条关系）。",
+                "cited_entity_ids": ent_ids[:3],
+                "cited_relation_ids": rel_ids[:3],
+                "cited_chunk_ids": [],
+            },
+            {
+                "step_id": 3,
+                "stage": "evidence_check",
+                "claim": "核对来源原文切片中的诊断规则、数值阈值与运维细节。",
+                "cited_entity_ids": [],
+                "cited_relation_ids": [],
+                "cited_chunk_ids": chunk_ids[:3],
+            },
+            {
+                "step_id": 4,
+                "stage": "synthesis",
+                "claim": f"综合图谱路径与原文证据，输出关于“{question[:40]}”的扎根结论。",
+                "cited_entity_ids": ent_ids[:2],
+                "cited_relation_ids": rel_ids[:2],
+                "cited_chunk_ids": chunk_ids[:2],
+            },
+        ]
+        cite_str = f" [{', '.join(chunk_ids[:2])}]" if chunk_ids else ""
+        payload = {
+            "anchor_entities": ent_ids[:3],
+            "steps": steps,
+            "final_answer": (
+                f"[Mock Graph-CoT] 针对问题“{question}”，已完成 4 步显性图谱推导并完成忠实度校验{cite_str}。"
+            ),
+            "confidence": 0.92 if (ent_ids or rel_ids or chunk_ids) else 0.5,
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+    @staticmethod
     def _mock_mcqa_answer(prompt: str) -> str:
-        """Deterministic MCQA responder supporting single-choice, multi-choice, and JSON mode."""
+        """Deterministic MCQA responder supporting single-choice, multi-choice, JSON & CoT mode."""
         opts_block = prompt.split("Options:\n", 1)[1].split("\n\n", 1)[0]
         options: list[tuple[str, str]] = []
         for line in opts_block.splitlines():
@@ -239,17 +301,54 @@ class MockLLMClient:
         ctx = prompt.split("Question:", 1)[0].lower()
         q_part = prompt.split("Question:", 1)[1].split("Options:", 1)[0].lower()
         is_negative = any(
-            kw in q_part for kw in ("not ", "irrelevant", "least relevant", "except", "eliminate")
+            kw in q_part
+            for kw in (
+                "not ",
+                "irrelevant",
+                "least ",
+                "except",
+                "eliminate",
+                "disregard",
+                "unimportant",
+                "non-relevant",
+                "exclude",
+                "inapplicable",
+            )
         )
 
+        # Parse tri-state lines if Scope-Aware L0 Context is present
+        linked_line = ""
+        unlinked_line = ""
+        for line in ctx.splitlines():
+            if "other valid" in line and "not " in line:
+                unlinked_line += " " + line
+            elif "monitored_by" in line or "monitors only" in line:
+                linked_line += " " + line
+
+        option_checks: list[dict[str, str]] = []
         chosen: list[str] = []
         if "structured knowledge graph facts" in ctx or "retrieved text chunks" in ctx:
-            target_flag = not is_negative
             for oid, opt in options:
-                if (opt in ctx) == target_flag:
+                if linked_line or unlinked_line:
+                    if opt in linked_line:
+                        status = "LINKED"
+                    elif opt in unlinked_line:
+                        status = "IN_ASSET_UNLINKED"
+                    else:
+                        status = "OUT_OF_ASSET"
+                else:
+                    status = "LINKED" if opt in ctx else "IN_ASSET_UNLINKED"
+                option_checks.append(
+                    {
+                        "option_id": oid,
+                        "option_text": opt,
+                        "kg_status": status,
+                        "matched_kg_item": opt if status != "OUT_OF_ASSET" else "",
+                    }
+                )
+                want = "IN_ASSET_UNLINKED" if is_negative else "LINKED"
+                if status == want and len(chosen) < expected:
                     chosen.append(oid)
-                    if len(chosen) >= expected:
-                        break
 
         while len(chosen) < expected and len(chosen) < len(options):
             for oid, _ in options:
@@ -257,6 +356,17 @@ class MockLLMClient:
                     chosen.append(oid)
                     break
 
+        if "MCQA_COT_TASK" in prompt:
+            return json.dumps(
+                {
+                    "target_anchor": "mock_anchor",
+                    "polarity": "irrelevant" if is_negative else "relevant",
+                    "option_checks": option_checks,
+                    "reasoning_summary": "Matched strictly against Scope-Aware KG links.",
+                    "answers": chosen,
+                },
+                ensure_ascii=False,
+            )
         if '{"answers":' in prompt:
             return json.dumps({"answers": chosen})
         return f"[Mock MCQA] Matched from context.\nAnswer: {', '.join(chosen)}"

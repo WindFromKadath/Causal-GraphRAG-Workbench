@@ -1,8 +1,10 @@
-"""GraphRAG retrieval engine supporting Local, Global, and Hybrid modes with provenance."""
+"""GraphRAG retrieval engine supporting Local, Global, Hybrid, and PPR modes with provenance."""
 
 from __future__ import annotations
 
 import re
+
+import networkx as nx
 
 from llm_graphrag_kg.core.interfaces import (
     BaseEmbeddingClient,
@@ -20,6 +22,7 @@ from llm_graphrag_kg.core.schema import (
 )
 from llm_graphrag_kg.harness.context_compactor import ContextCompactor
 from llm_graphrag_kg.harness.runtime import LLMHarness
+from llm_graphrag_kg.reasoning.cot import GraphCoTEngine
 
 QA_SYSTEM_PROMPT = (
     "You are a grounded GraphRAG assistant. Answer the user's question accurately using ONLY "
@@ -61,23 +64,37 @@ class GraphRAGRetriever:
         self.compactor = compactor or ContextCompactor()
         self.harness = harness or LLMHarness(llm, compactor=self.compactor)
 
-    def query(self, question: str, *, mode: str = "hybrid") -> QueryResult:
+    def query(
+        self,
+        question: str,
+        *,
+        mode: str = "hybrid",
+        reasoning: str = "direct",
+    ) -> QueryResult:
         normalized_mode = mode.strip().lower()
-        if normalized_mode not in {"local", "global", "hybrid"}:
-            raise ValueError(f"Unsupported retrieval mode: {mode!r}. Use local | global | hybrid.")
+        if normalized_mode not in {"local", "global", "hybrid", "ppr"}:
+            raise ValueError(
+                f"Unsupported retrieval mode: {mode!r}. Use local | global | hybrid | ppr."
+            )
+        normalized_reasoning = reasoning.strip().lower()
+        if normalized_reasoning not in {"direct", "cot"}:
+            raise ValueError(
+                f"Unsupported reasoning paradigm: {reasoning!r}. Use direct | cot."
+            )
 
         seed_entities: list[Entity] = []
         expanded_entities: list[Entity] = []
         sub_relations: list[Relation] = []
         selected_communities: list[Community] = []
         evidence_by_chunk: dict[str, EvidenceItem] = {}
+        ppr_top_scores: dict[str, float] = {}
 
-        # 1. Vector retrieval (used in hybrid, and as fallback/enrichment for local)
+        # 1. Vector retrieval (used in hybrid, ppr, and as fallback/enrichment for local)
         vector_hits = []
-        if normalized_mode in {"hybrid", "local"}:
+        if normalized_mode in {"hybrid", "local", "ppr"}:
             q_vec = self.embedder.embed([question])[0]
             vector_hits = self.vector_store.search(q_vec, top_k=self.top_k_chunks)
-            if normalized_mode == "hybrid":
+            if normalized_mode in {"hybrid", "ppr"}:
                 for chunk, score in vector_hits:
                     evidence_by_chunk[chunk.chunk_id] = EvidenceItem(
                         chunk_id=chunk.chunk_id,
@@ -88,8 +105,8 @@ class GraphRAGRetriever:
                         matched_via="vector",
                     )
 
-        # 2. Local KG entity matching + k-hop subgraph expansion
-        if normalized_mode in {"local", "hybrid"}:
+        # 2. Local KG entity matching + k-hop expansion OR HippoRAG-style PPR diffusion
+        if normalized_mode in {"local", "hybrid", "ppr"}:
             seed_entities = self.graph_store.find_entities_by_query(
                 question, top_k=self.top_k_entities
             )
@@ -103,22 +120,35 @@ class GraphRAGRetriever:
                             break
 
             seed_ids = [e.entity_id for e in seed_entities]
-            expanded_entities, sub_relations = self.graph_store.get_k_hop_subgraph(
-                seed_ids, k_hops=self.k_hops
-            )
-
-            # Collect provenance chunks linked to the retrieved subgraph
-            graph_chunk_ids: list[str] = []
-            for rel in sub_relations:
-                graph_chunk_ids.extend(rel.source_chunk_ids)
-            for ent in expanded_entities:
-                graph_chunk_ids.extend(ent.source_chunk_ids)
+            if normalized_mode == "ppr":
+                (
+                    expanded_entities,
+                    sub_relations,
+                    ppr_chunk_ids,
+                    ppr_top_scores,
+                ) = self._run_ppr_retrieval(
+                    seed_ids=seed_ids,
+                    vector_hits=vector_hits,
+                    max_entities=max(self.compactor.max_entities, self.top_k_entities * 3),
+                    max_chunks=self.top_k_chunks + 3,
+                )
+                graph_chunk_ids = list(ppr_chunk_ids)
+            else:
+                expanded_entities, sub_relations = self.graph_store.get_k_hop_subgraph(
+                    seed_ids, k_hops=self.k_hops
+                )
+                graph_chunk_ids = []
+                for rel in sub_relations:
+                    graph_chunk_ids.extend(rel.source_chunk_ids)
+                for ent in expanded_entities:
+                    graph_chunk_ids.extend(ent.source_chunk_ids)
 
             for cid in dict.fromkeys(graph_chunk_ids):
                 if cid in evidence_by_chunk:
                     item = evidence_by_chunk[cid]
+                    tag = "ppr" if normalized_mode == "ppr" else "graph"
                     evidence_by_chunk[cid] = item.model_copy(
-                        update={"matched_via": f"{item.matched_via}+graph"}
+                        update={"matched_via": f"{item.matched_via}+{tag}"}
                     )
                     continue
                 chunk = self.vector_store.get_chunk(cid)
@@ -128,14 +158,14 @@ class GraphRAGRetriever:
                         doc_id=chunk.doc_id,
                         source=chunk.source,
                         text=chunk.text,
-                        score=1.0,
-                        matched_via="graph",
+                        score=round(ppr_top_scores.get(f"chunk::{cid}", 1.0), 4),
+                        matched_via="ppr" if normalized_mode == "ppr" else "graph",
                     )
                 if len(evidence_by_chunk) >= self.top_k_chunks + 3:
                     break
 
         # 3. Global community summary retrieval
-        if normalized_mode in {"global", "hybrid"}:
+        if normalized_mode in {"global", "hybrid", "ppr"}:
             selected_communities = self._rank_communities(
                 question,
                 self.graph_store.get_all_communities(),
@@ -152,9 +182,16 @@ class GraphRAGRetriever:
 
         evidences = list(evidence_by_chunk.values())
         compaction_meta: dict[str, object] | None = None
+        reasoning_meta: dict[str, object] | None = None
 
-        if self.enable_compact:
-            compacted = self.compactor.compact_graphrag_context(
+        if normalized_reasoning == "cot":
+            cot_engine = GraphCoTEngine(
+                self.harness,
+                compactor=self.compactor,
+                enable_compact=self.enable_compact,
+                temperature=self.temperature,
+            )
+            cot_result = cot_engine.run(
                 question=question,
                 seed_entity_ids=[e.entity_id for e in seed_entities],
                 entities=expanded_entities,
@@ -162,33 +199,46 @@ class GraphRAGRetriever:
                 communities=selected_communities,
                 evidences=evidences,
             )
-            compaction_meta = compacted.report.model_dump()
-            prompt = LLMHarness.compile_prompt(
-                context_text=compacted.full_text,
-                question=question,
-                task_instruction=(
-                    f"Retrieval Mode: {normalized_mode}\n"
-                    "Please provide a clear, structured Chinese answer citing relevant chunk IDs."
-                ),
-            )
+            answer = cot_result.final_answer
+            compaction_meta = cot_result.compaction
+            reasoning_meta = cot_result.model_dump()
         else:
-            prompt = self._compose_prompt(
-                question=question,
-                mode=normalized_mode,
-                entities=expanded_entities,
-                relations=sub_relations,
-                communities=selected_communities,
-                evidences=evidences,
-            )
+            if self.enable_compact:
+                compacted = self.compactor.compact_graphrag_context(
+                    question=question,
+                    seed_entity_ids=[e.entity_id for e in seed_entities],
+                    entities=expanded_entities,
+                    relations=sub_relations,
+                    communities=selected_communities,
+                    evidences=evidences,
+                )
+                compaction_meta = compacted.report.model_dump()
+                prompt = LLMHarness.compile_prompt(
+                    context_text=compacted.full_text,
+                    question=question,
+                    task_instruction=(
+                        f"Retrieval Mode: {normalized_mode}\n"
+                        "Please provide a clear, structured Chinese answer citing relevant chunk IDs."
+                    ),
+                )
+            else:
+                prompt = self._compose_prompt(
+                    question=question,
+                    mode=normalized_mode,
+                    entities=expanded_entities,
+                    relations=sub_relations,
+                    communities=selected_communities,
+                    evidences=evidences,
+                )
 
-        self.harness.reset_ledger()
-        answer = self.harness.run_text(
-            prompt,
-            step_name=f"graphrag_query_{normalized_mode}",
-            system_prompt=QA_SYSTEM_PROMPT,
-            temperature=self.temperature,
-            json_mode=False,
-        )
+            self.harness.reset_ledger()
+            answer = self.harness.run_text(
+                prompt,
+                step_name=f"graphrag_query_{normalized_mode}",
+                system_prompt=QA_SYSTEM_PROMPT,
+                temperature=self.temperature,
+                json_mode=False,
+            )
 
         trace = SubgraphTrace(
             seed_entity_ids=[e.entity_id for e in seed_entities],
@@ -201,10 +251,17 @@ class GraphRAGRetriever:
             "expanded_entity_count": len(expanded_entities),
             "relation_count": len(sub_relations),
             "community_count": len(selected_communities),
+            "reasoning_paradigm": normalized_reasoning,
             "harness_ledger": self.harness.ledger.summary(),
         }
         if compaction_meta is not None:
             metadata["compaction"] = compaction_meta
+        if reasoning_meta is not None:
+            metadata["reasoning"] = reasoning_meta
+        if ppr_top_scores:
+            metadata["ppr_top_nodes"] = dict(
+                sorted(ppr_top_scores.items(), key=lambda kv: -kv[1])[:8]
+            )
 
         return QueryResult(
             question=question,
@@ -214,6 +271,124 @@ class GraphRAGRetriever:
             evidences=evidences,
             metadata=metadata,
         )
+
+    def _run_ppr_retrieval(
+        self,
+        *,
+        seed_ids: list[str],
+        vector_hits: list[tuple[object, float]],
+        max_entities: int = 18,
+        max_chunks: int = 6,
+        alpha: float = 0.85,
+    ) -> tuple[list[Entity], list[Relation], list[str], dict[str, float]]:
+        """HippoRAG-inspired Personalized PageRank over heterogeneous entity-chunk graph."""
+        all_entities = self.graph_store.get_all_entities()
+        all_relations = self.graph_store.get_all_relations()
+        if not all_entities:
+            return [], [], [], {}
+
+        ent_map = {e.entity_id: e for e in all_entities}
+        graph = nx.Graph()
+
+        for ent in all_entities:
+            graph.add_node(ent.entity_id)
+            for cid in ent.source_chunk_ids:
+                cnode = f"chunk::{cid}"
+                graph.add_edge(ent.entity_id, cnode, weight=0.5)
+
+        for rel in all_relations:
+            if rel.source_id in ent_map and rel.target_id in ent_map:
+                w = max(0.1, float(rel.weight))
+                if graph.has_edge(rel.source_id, rel.target_id):
+                    graph[rel.source_id][rel.target_id]["weight"] += w
+                else:
+                    graph.add_edge(rel.source_id, rel.target_id, weight=w)
+
+        personalization: dict[str, float] = {}
+        for eid in seed_ids:
+            if eid in graph:
+                personalization[eid] = personalization.get(eid, 0.0) + 1.0
+        for chunk, score in vector_hits:
+            cid = getattr(chunk, "chunk_id", "")
+            cnode = f"chunk::{cid}"
+            if cnode in graph:
+                personalization[cnode] = personalization.get(cnode, 0.0) + max(0.2, float(score))
+
+        if not personalization:
+            return [], [], [], {}
+
+        total_p = sum(personalization.values())
+        norm_pers = {k: v / total_p for k, v in personalization.items()}
+
+        pr_scores = self._personalized_pagerank(graph, norm_pers, alpha=alpha)
+
+        ranked_eids = [
+            nid
+            for nid, _ in sorted(
+                ((k, v) for k, v in pr_scores.items() if k in ent_map),
+                key=lambda kv: -kv[1],
+            )[:max_entities]
+        ]
+        # Always retain direct seeds
+        kept_eid_order = list(dict.fromkeys([*seed_ids, *ranked_eids]))[:max_entities]
+        kept_eid_set = set(kept_eid_order)
+        kept_entities = [ent_map[eid] for eid in kept_eid_order if eid in ent_map]
+
+        kept_relations = [
+            rel
+            for rel in all_relations
+            if rel.source_id in kept_eid_set and rel.target_id in kept_eid_set
+        ]
+
+        ranked_cids = [
+            nid.removeprefix("chunk::")
+            for nid, _ in sorted(
+                ((k, v) for k, v in pr_scores.items() if k.startswith("chunk::")),
+                key=lambda kv: -kv[1],
+            )[:max_chunks]
+        ]
+        return kept_entities, kept_relations, ranked_cids, pr_scores
+
+    @staticmethod
+    def _personalized_pagerank(
+        graph: nx.Graph,
+        personalization: dict[str, float],
+        *,
+        alpha: float = 0.85,
+        max_iter: int = 50,
+        tol: float = 1e-6,
+    ) -> dict[str, float]:
+        """Dependency-free weighted Personalized PageRank via power iteration (no scipy required)."""
+        nodes = list(graph.nodes())
+        if not nodes:
+            return {}
+        out_weight: dict[str, float] = {
+            u: sum(float(data.get("weight", 1.0)) for _, _, data in graph.edges(u, data=True))
+            for u in nodes
+        }
+        scores: dict[str, float] = {u: personalization.get(u, 0.0) for u in nodes}
+        dangling_nodes = [u for u, w in out_weight.items() if w <= 0.0]
+
+        for _ in range(max_iter):
+            prev = scores
+            scores = {u: (1.0 - alpha) * personalization.get(u, 0.0) for u in nodes}
+            dangling_sum = alpha * sum(prev[u] for u in dangling_nodes)
+            if dangling_sum > 0.0:
+                for u, p_val in personalization.items():
+                    scores[u] = scores.get(u, 0.0) + dangling_sum * p_val
+
+            for u in nodes:
+                w_sum = out_weight[u]
+                if w_sum <= 0.0 or prev[u] == 0.0:
+                    continue
+                share = alpha * prev[u] / w_sum
+                for _, v, data in graph.edges(u, data=True):
+                    scores[v] += share * float(data.get("weight", 1.0))
+
+            diff = sum(abs(scores[u] - prev[u]) for u in nodes)
+            if diff < tol:
+                break
+        return scores
 
     @staticmethod
     def _rank_communities(

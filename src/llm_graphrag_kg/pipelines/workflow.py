@@ -137,8 +137,9 @@ class GraphRAGPipeline:
         storage_dir: Path | None = None,
         auto_load: bool = True,
         enable_compact: bool | None = None,
+        reasoning: str | None = None,
     ) -> QueryResult:
-        """Run an online GraphRAG query with full subgraph, compaction, and provenance trace."""
+        """Run an online GraphRAG query with full subgraph, compaction, and reasoning trace."""
         if auto_load and not self.graph_store.get_all_entities():
             self.load(storage_dir)
 
@@ -172,4 +173,8 @@ class GraphRAGPipeline:
             compactor=compactor,
             harness=harness,
         )
-        return retriever.query(question, mode=mode or self.config.retrieval.default_mode)
+        return retriever.query(
+            question,
+            mode=mode or self.config.retrieval.default_mode,
+            reasoning=reasoning or self.config.reasoning.default_paradigm,
+        )

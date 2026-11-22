@@ -181,7 +181,10 @@ def export_viz(
 def query(
     question: Annotated[str, typer.Argument(help="Question to ask the GraphRAG system.")],
     mode: Annotated[
-        str | None, typer.Option(help="Retrieval mode: local | global | hybrid")
+        str | None, typer.Option(help="Retrieval mode: local | global | hybrid | ppr")
+    ] = None,
+    reasoning: Annotated[
+        str | None, typer.Option(help="Reasoning paradigm: direct | cot")
     ] = None,
     provider: Annotated[
         str | None, typer.Option(help="Override LLM provider: openai_compat | mock")
@@ -200,22 +203,46 @@ def query(
         bool | None,
         typer.Option("--compact/--no-compact", help="Enable Stage 2.1 L0/L1 context compaction."),
     ] = None,
+    think: Annotated[
+        bool | None,
+        typer.Option(
+            "--think/--no-think",
+            help="Control Ollama implicit thinking (defaults to False under --reasoning cot).",
+        ),
+    ] = None,
     config_file: Annotated[Path | None, typer.Option(help="Optional YAML config path.")] = None,
 ) -> None:
-    """Execute a GraphRAG query and inspect answer, subgraph trace, and source evidences."""
+    """Execute a GraphRAG query and inspect answer, subgraph trace, CoT grounding, and evidences."""
     cfg = load_config(
         config_path=config_file,
         llm_provider_override=provider,
         embedding_provider_override=embedder,
     )
+    eff_reasoning = (reasoning or cfg.reasoning.default_paradigm).strip().lower()
+    if think is not None:
+        cfg.env.llm_think = think
+    elif eff_reasoning == "cot" and cfg.env.llm_think is None:
+        # Stage 2 design: replace black-box implicit thinking with explicit structured Graph-CoT
+        cfg.env.llm_think = False
     pipeline = GraphRAGPipeline(cfg)
     result = pipeline.query(
-        question, mode=mode, storage_dir=storage_dir, enable_compact=compact
+        question,
+        mode=mode,
+        storage_dir=storage_dir,
+        enable_compact=compact,
+        reasoning=reasoning,
     )
 
-    console.print(Panel(result.answer, title=f"GraphRAG Answer ({result.mode})", border_style="green"))
+    paradigm_tag = result.metadata.get("reasoning_paradigm", "direct")
+    console.print(
+        Panel(
+            result.answer,
+            title=f"GraphRAG Answer ({result.mode} | reasoning={paradigm_tag})",
+            border_style="green",
+        )
+    )
 
-    trace_table = Table(title="Retrieval Trace")
+    trace_table = Table(title="Retrieval & Reasoning Trace")
     trace_table.add_column("Dimension", style="cyan")
     trace_table.add_column("Details", style="white")
     trace_table.add_row("Seed Entities", ", ".join(result.metadata.get("seed_entity_names", [])) or "-")
@@ -231,7 +258,40 @@ def query(
             f"(-{comp['compression_ratio'] * 100:.1f}%, dropped_nodes={comp['dropped_nodes']}, "
             f"levels={comp['applied_levels']})",
         )
+    reasoning_data = result.metadata.get("reasoning")
+    if isinstance(reasoning_data, dict):
+        audit_data = reasoning_data.get("grounding_audit", {})
+        if isinstance(audit_data, dict):
+            trace_table.add_row(
+                "Grounding Audit",
+                f"score={audit_data.get('grounding_score', 0.0) * 100:.1f}% "
+                f"({audit_data.get('grounded_steps', 0)}/{audit_data.get('total_steps', 0)} steps, "
+                f"passed={audit_data.get('passed')}, "
+                f"ungrounded={len(audit_data.get('ungrounded_citations', []))})",
+            )
     console.print(trace_table)
+
+    if isinstance(reasoning_data, dict) and reasoning_data.get("steps"):
+        cot_table = Table(title="Explicit Graph-CoT Steps")
+        cot_table.add_column("#", style="cyan")
+        cot_table.add_column("Stage", style="magenta")
+        cot_table.add_column("Grounded", style="green")
+        cot_table.add_column("Claim & Citations", style="white")
+        for st in reasoning_data["steps"]:
+            status_str = "[green]PASS[/green]" if st.get("grounded") else "[red]FAIL[/red]"
+            cites = [
+                *st.get("cited_entity_ids", []),
+                *st.get("cited_relation_ids", []),
+                *st.get("cited_chunk_ids", []),
+            ]
+            cite_suffix = f"\n[dim]cites: {', '.join(cites[:6])}[/dim]" if cites else ""
+            cot_table.add_row(
+                str(st.get("step_id", "")),
+                str(st.get("stage", "")),
+                status_str,
+                f"{st.get('claim', '')}{cite_suffix}",
+            )
+        console.print(cot_table)
 
     if export_html:
         trace_html = export_pyvis_html(
@@ -373,6 +433,10 @@ def eval_fsiq(
         str,
         typer.Option(help="Comma-separated modes: llm_only,naive_rag,graphrag_kg"),
     ] = "llm_only,naive_rag,graphrag_kg",
+    reasoning: Annotated[
+        str,
+        typer.Option("--reasoning", help="Reasoning paradigm: direct | cot"),
+    ] = "direct",
     provider: Annotated[
         str | None, typer.Option(help="Override LLM provider: openai_compat | mock")
     ] = None,
@@ -386,6 +450,7 @@ def eval_fsiq(
         limit=limit,
         seed=seed,
         modes=mode_list,
+        reasoning_paradigm=reasoning,
     )
 
     table = Table(
@@ -447,8 +512,12 @@ def stress_fsiq(
     ] = True,
     compact: Annotated[
         bool,
-        typer.Option("--compact/--no-compact", help="Use Stage 2.1 L0 question-anchor compaction."),
+        typer.Option("--compact/--no-compact", help="Use Scope-Aware L0 question-anchor compaction."),
     ] = True,
+    reasoning: Annotated[
+        str,
+        typer.Option("--reasoning", help="Reasoning paradigm: direct | cot"),
+    ] = "direct",
     resume: Annotated[
         bool,
         typer.Option("--resume/--no-resume", help="Resume from per-suite JSONL checkpoints."),
@@ -537,6 +606,7 @@ def stress_fsiq(
         modes=mode_list,
         concise_json=concise_json,
         compact_anchor_only=compact,
+        reasoning_paradigm=reasoning,
         resume=resume,
         progress_every=progress_every,
         suites=selected_suites,
