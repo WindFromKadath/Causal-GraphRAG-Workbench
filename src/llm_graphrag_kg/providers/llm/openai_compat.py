@@ -32,6 +32,7 @@ class OpenAICompatLLMClient:
         system_prompt: str | None = None,
         temperature: float = 0.1,
         json_mode: bool = False,
+        max_tokens: int | None = None,
     ) -> str:
         messages: list[dict[str, str]] = []
         if system_prompt:
@@ -43,6 +44,8 @@ class OpenAICompatLLMClient:
             "messages": messages,
             "temperature": temperature,
         }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
 
@@ -55,8 +58,16 @@ class OpenAICompatLLMClient:
             kwargs.pop("response_format", None)
             response = self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
 
-        content = response.choices[0].message.content or ""
-        return content.strip()
+        message = response.choices[0].message
+        content = (message.content or "").strip()
+        if not content:
+            # Fallback for reasoning models that emit text in `reasoning` / `reasoning_content`.
+            for attr in ("reasoning_content", "reasoning"):
+                extra = getattr(message, attr, None)
+                if extra:
+                    content = str(extra).strip()
+                    break
+        return content
 
     def health_check(self) -> tuple[bool, str]:
         """Verify endpoint availability by listing models or issuing a minimal completion."""

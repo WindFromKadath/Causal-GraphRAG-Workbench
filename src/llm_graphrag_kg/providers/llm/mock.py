@@ -117,8 +117,13 @@ class MockLLMClient:
         system_prompt: str | None = None,
         temperature: float = 0.1,
         json_mode: bool = False,
+        max_tokens: int | None = None,
     ) -> str:
-        _ = (system_prompt, temperature)
+        _ = (system_prompt, temperature, max_tokens)
+        if "Options:\n" in prompt and (
+            "Answer: <" in prompt or '{"answers":' in prompt
+        ):
+            return self._mock_mcqa_answer(prompt)
         if json_mode or "ENTITY_EXTRACTION_TASK" in prompt:
             return self._mock_extract(prompt)
         if "COMMUNITY_SUMMARY_TASK" in prompt:
@@ -217,15 +222,18 @@ class MockLLMClient:
 
     @staticmethod
     def _mock_mcqa_answer(prompt: str) -> str:
-        """Deterministic MCQA responder that uses provided KG/chunk context when present."""
+        """Deterministic MCQA responder supporting single-choice, multi-choice, and JSON mode."""
         opts_block = prompt.split("Options:\n", 1)[1].split("\n\n", 1)[0]
         options: list[tuple[str, str]] = []
         for line in opts_block.splitlines():
-            m = re.match(r"^\s*([A-J])\.\s*(.+?)\s*$", line)
+            m = re.match(r"^\s*([A-Za-z0-9]+)[\.\)]\s*(.+?)\s*$", line)
             if m:
-                options.append((m.group(1), m.group(2).lower()))
+                options.append((m.group(1).upper(), m.group(2).lower()))
         if not options:
-            return "Answer: A"
+            return json.dumps({"answers": ["A"]})
+
+        count_match = re.search(r"Select\s+(?:all\s+|exactly\s+)?(\d+)", prompt, flags=re.I)
+        expected = int(count_match.group(1)) if count_match else 1
 
         ctx = prompt.split("Question:", 1)[0].lower()
         q_part = prompt.split("Question:", 1)[1].split("Options:", 1)[0].lower()
@@ -233,11 +241,21 @@ class MockLLMClient:
             kw in q_part for kw in ("not ", "irrelevant", "least relevant", "except", "eliminate")
         )
 
+        chosen: list[str] = []
         if "structured knowledge graph facts" in ctx or "retrieved text chunks" in ctx:
-            matches = [(oid, opt in ctx) for oid, opt in options]
             target_flag = not is_negative
-            for oid, present in matches:
-                if present == target_flag:
-                    return f"[Mock MCQA] Matched from context.\nAnswer: {oid}"
+            for oid, opt in options:
+                if (opt in ctx) == target_flag:
+                    chosen.append(oid)
+                    if len(chosen) >= expected:
+                        break
 
-        return f"[Mock MCQA] Fallback guess.\nAnswer: {options[0][0]}"
+        while len(chosen) < expected and len(chosen) < len(options):
+            for oid, _ in options:
+                if oid not in chosen:
+                    chosen.append(oid)
+                    break
+
+        if '{"answers":' in prompt:
+            return json.dumps({"answers": chosen})
+        return f"[Mock MCQA] Matched from context.\nAnswer: {', '.join(chosen)}"

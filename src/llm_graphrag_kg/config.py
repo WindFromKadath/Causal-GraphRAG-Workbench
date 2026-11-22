@@ -73,6 +73,9 @@ class EnvSettings(BaseSettings):
     llm_api_key: str = "local-no-key"
     llm_model: str = "qwen2.5:7b"
     llm_timeout: int = 60
+    llm_think: bool | None = None
+    llm_num_ctx: int | None = None
+    llm_max_tokens: int | None = None
 
     embedding_provider: str = "local_hash"
     embedding_base_url: str = "http://127.0.0.1:11434/v1"
@@ -114,6 +117,8 @@ class AppConfig(BaseModel):
             "llm_provider": self.env.llm_provider,
             "llm_base_url": self.env.llm_base_url,
             "llm_model": self.env.llm_model,
+            "llm_think": self.env.llm_think,
+            "llm_num_ctx": self.env.llm_num_ctx,
             "llm_api_key": mask_secret(self.env.llm_api_key),
             "embedding_provider": self.env.embedding_provider,
             "embedding_base_url": self.env.embedding_base_url,

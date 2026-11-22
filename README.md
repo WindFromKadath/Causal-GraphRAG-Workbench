@@ -65,6 +65,9 @@ uv run llm-graphrag-kg ingest-fsiq --source data/private/failuresensoriq/failure
 uv run llm-graphrag-kg audit --config-file configs/failuresensoriq.yaml
 uv run llm-graphrag-kg export-viz --config-file configs/failuresensoriq.yaml --color-by type
 uv run llm-graphrag-kg eval-fsiq --questions data/private/failuresensoriq/failuresensoriq_standard__all.jsonl --limit 20
+
+# 9. 四级难度极限压测（每集 100 题，含 10选1 / 5选2多选 / 扰动集，支持极简 JSON 提速与断点续跑）
+uv run llm-graphrag-kg stress-fsiq --data-dir data/private/failuresensoriq --limit 100 --no-think --num-ctx 32768
 ```
 
 ## 隐私与提交流程

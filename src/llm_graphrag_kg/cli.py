@@ -16,6 +16,7 @@ from rich.table import Table
 from llm_graphrag_kg.adapters.failuresensoriq import (
     build_failuresensoriq_kg,
     evaluate_failuresensoriq,
+    run_failuresensoriq_stress_suite,
 )
 from llm_graphrag_kg.config import load_config
 from llm_graphrag_kg.pipelines.workflow import GraphRAGPipeline
@@ -381,3 +382,81 @@ def eval_fsiq(
         table.add_row(m.mode, f"{m.correct} / {m.total}", f"{m.accuracy * 100:.1f}%")
     console.print(table)
     console.print(f"[cyan]Detailed report written to:[/cyan] {report_path}")
+
+
+@app.command("stress-fsiq")
+def stress_fsiq(
+    data_dir: Annotated[
+        Path,
+        typer.Option(
+            "--data-dir",
+            help="Directory holding the 4 FailureSensorIQ JSONL benchmark suites.",
+        ),
+    ] = Path("data/private/failuresensoriq"),
+    config_file: Annotated[
+        Path, typer.Option("--config-file", help="YAML config path.")
+    ] = Path("configs/failuresensoriq.yaml"),
+    limit: Annotated[int, typer.Option(help="Stratified questions per suite.")] = 100,
+    seed: Annotated[int, typer.Option(help="Random seed for stratified sampling.")] = 42,
+    modes: Annotated[
+        str,
+        typer.Option(help="Comma-separated modes: llm_only,naive_rag,graphrag_kg"),
+    ] = "llm_only,naive_rag,graphrag_kg",
+    provider: Annotated[
+        str | None, typer.Option(help="Override LLM provider: ollama_native | openai_compat | mock")
+    ] = None,
+    think: Annotated[
+        bool | None,
+        typer.Option("--think/--no-think", help="Control Ollama thinking mode during stress test."),
+    ] = False,
+    num_ctx: Annotated[
+        int | None, typer.Option("--num-ctx", help="Override Ollama context length (e.g., 32768).")
+    ] = 32768,
+    concise_json: Annotated[
+        bool,
+        typer.Option("--concise-json/--verbose-text", help="Enforce compact JSON answer output."),
+    ] = True,
+    resume: Annotated[
+        bool,
+        typer.Option("--resume/--no-resume", help="Resume from per-suite JSONL checkpoints."),
+    ] = True,
+) -> None:
+    """Run 4-suite FailureSensorIQ stress test (standard, 10-opt, multi-answer, perturbed)."""
+    cfg = load_config(config_path=config_file, llm_provider_override=provider)
+    if think is not None:
+        cfg.env.llm_think = think
+    if num_ctx is not None:
+        cfg.env.llm_num_ctx = num_ctx
+
+    mode_list = [m.strip() for m in modes.split(",") if m.strip()]
+    report, report_path = run_failuresensoriq_stress_suite(
+        data_dir=data_dir,
+        config=cfg,
+        limit_per_suite=limit,
+        seed=seed,
+        modes=mode_list,
+        concise_json=concise_json,
+        resume=resume,
+    )
+
+    table = Table(
+        title=f"FailureSensorIQ 4-Suite Stress Test ({limit} Qs/suite | {report.llm_model})"
+    )
+    table.add_column("Suite", style="cyan")
+    table.add_column("Mode", style="white")
+    table.add_column("Exact Match", style="green")
+    table.add_column("Macro-F1", style="yellow")
+    table.add_column("Empty", style="red")
+    table.add_column("Avg Latency", style="magenta")
+    for s in report.suites:
+        for m in s.modes:
+            table.add_row(
+                s.suite_name,
+                m.mode,
+                f"{m.accuracy * 100:.1f}% ({m.correct}/{m.total})",
+                f"{m.macro_f1 * 100:.1f}%",
+                str(m.empty_responses),
+                f"{m.avg_latency_seconds:.2f}s",
+            )
+    console.print(table)
+    console.print(f"[cyan]Full stress report written to:[/cyan] {report_path}")

@@ -7,8 +7,13 @@ from pathlib import Path
 
 from llm_graphrag_kg.adapters.failuresensoriq import (
     build_failuresensoriq_kg,
+    compute_set_f1,
+    detect_asset_from_question,
     evaluate_failuresensoriq,
+    normalize_option_id,
     normalize_sensor_name,
+    parse_option_answers,
+    run_failuresensoriq_stress_suite,
 )
 from llm_graphrag_kg.config import load_config
 
@@ -22,6 +27,25 @@ def test_sensor_entity_resolution_fixes_real_typos() -> None:
 
     name3, merged3 = normalize_sensor_name("Vibration")
     assert name3 == "vibration" and merged3 is False
+
+
+def test_metadata_free_asset_linking_and_perturbed_multi_answer_parsing() -> None:
+    assets = ["electric motor", "industrial gas turbine", "pump", "aero gas turbine"]
+    assert (
+        detect_asset_from_question(
+            "In industrial gas turbine, when blade crack occurs, which sensors apply?",
+            assets,
+        )
+        == "industrial gas turbine"
+    )
+    assert normalize_option_id("P)") == "P"
+    assert parse_option_answers('{"answers": ["P)", "S)"]}', ["P)", "Q)", "R)", "S)", "T)"], 2) == [
+        "P",
+        "S",
+    ]
+    assert parse_option_answers("Answer: B, E", ["A", "B", "C", "D", "E"], 2) == ["B", "E"]
+    assert compute_set_f1(["A", "B"], ["A", "C"]) == 0.5
+    assert compute_set_f1(["A", "B"], ["A", "B"]) == 1.0
 
 
 def test_failuresensoriq_ingest_and_eval_e2e(tmp_path: Path) -> None:
@@ -149,3 +173,67 @@ def test_failuresensoriq_ingest_and_eval_e2e(tmp_path: Path) -> None:
     assert summary.total_questions == 2
     by_mode = {m.mode: m for m in summary.modes}
     assert by_mode["graphrag_kg"].accuracy == 1.0
+
+    # Verify 4-suite stress runner with multi-answer + perturbed option labels + resume
+    suite_dir = tmp_path / "suites"
+    suite_dir.mkdir()
+    (suite_dir / "failuresensoriq_standard__all.jsonl").write_text(
+        qa_file.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (suite_dir / "failuresensoriq_standard__all_10_options.jsonl").write_text(
+        qa_file.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    multi_rows = [
+        {
+            "id": 100,
+            "question": "For pump, if bearing damage occurs, which sensors are most relevant?",
+            "options": ["voltage", "vibration", "current", "temperature", "resistance"],
+            "option_ids": ["A", "B", "C", "D", "E"],
+            "correct": [False, True, False, True, False],
+        }
+    ]
+    (suite_dir / "failuresensoriq_standard__all_multi_answers.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in multi_rows) + "\n", encoding="utf-8"
+    )
+    perturbed_rows = [
+        {
+            "id": 200,
+            "question": "In electric motor, for rotor windings fault, which sensor is relevant?",
+            "options": ["voltage", "current", "vibration"],
+            "option_ids": ["P)", "Q)", "R)"],
+            "correct": [False, True, False],
+        }
+    ]
+    (suite_dir / "failuresensoriq_perturbed__perturbed_simple.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in perturbed_rows) + "\n", encoding="utf-8"
+    )
+
+    stress_report, stress_md = run_failuresensoriq_stress_suite(
+        suite_dir,
+        cfg,
+        storage_dir=storage_dir,
+        output_dir=tmp_path / "stress_out",
+        limit_per_suite=2,
+        modes=["llm_only", "graphrag_kg"],
+        concise_json=True,
+        resume=True,
+    )
+    assert stress_md.is_file()
+    assert len(stress_report.suites) == 4
+    suite_map = {s.suite_name: {m.mode: m for m in s.modes} for s in stress_report.suites}
+    assert suite_map["L3_multi_answers"]["graphrag_kg"].accuracy == 1.0
+    assert suite_map["L4_perturbed_simple"]["graphrag_kg"].accuracy == 1.0
+    assert suite_map["L4_perturbed_simple"]["graphrag_kg"].asset_linked_count == 1
+
+    # Calling again with resume=True should reuse checkpoints cleanly
+    resumed_report, _ = run_failuresensoriq_stress_suite(
+        suite_dir,
+        cfg,
+        storage_dir=storage_dir,
+        output_dir=tmp_path / "stress_out",
+        limit_per_suite=2,
+        modes=["llm_only", "graphrag_kg"],
+        concise_json=True,
+        resume=True,
+    )
+    assert len(resumed_report.suites) == 4

@@ -6,6 +6,18 @@
 
 ---
 
+## [2026-11-22] Phase 3.2 - Ollama 原生控制与 FailureSensorIQ 四级难度极限压测引擎
+- **提交类型**：`feat`
+- **变更背景**：基于实测定位了 Ollama 默认 4K 上下文截断与 `gemma4:12b` 默认思考模式过度耗时的瓶颈，将原生 `think` / `num_ctx` 控制与四级难度极限压测引擎正式沉淀进项目源码，支持每集 100 题（及全量）断点续跑压测。
+- **主要修改**：
+  - 新增 `src/llm_graphrag_kg/providers/llm/ollama_native.py`（`OllamaNativeLLMClient`），通过 `/api/chat` 精确控制 `think`、`num_ctx`、`num_predict` 并记录精确 `tok/s` 遥测；同步扩展 `config.py`、`.env.example`、`providers/factory.py` 与 `openai_compat.py`（支持 `max_tokens` 与推理字段安全回退）。
+  - 升级 `src/llm_graphrag_kg/adapters/failuresensoriq.py`：实现无元数据自然语言资产实体链接（`detect_asset_from_question`）、兼容 `P)~T)` 扰动选项与 `5选2` 多选题解析与 `Exact Match + Macro-F1` 评测、极简 JSON 极速答题模式、JSONL 逐题断点续跑，以及四集统一调度器 `run_failuresensoriq_stress_suite()`。
+  - 在 `src/llm_graphrag_kg/cli.py` 中新增 `llm-graphrag-kg stress-fsiq` 压测命令，同步更新 `MockLLMClient`、`README.md` 与 `tests/test_failuresensoriq.py`。
+- **验证方式**：通过 `ruff check`、`pytest -v`（11/11 全部通过），并准备对本地 4 套 FailureSensorIQ 基准集执行每集 100 题（共 400 题 × 3 模式）实跑压测。
+- **隐私与迁移自检**：所有压测数据与断点报告均输出至被 `.gitignore` 忽略的 `data/private/` 与 `outputs/`；已通过 `privacy_check.py --staged --require-changelog`。
+
+---
+
 ## [2026-11-21] Phase 3.1 - IBM FailureSensorIQ 公开基准集适配、实体消歧与三基线量化评测
 - **提交类型**：`feat`
 - **变更背景**：从候选工业/核电数据集中选定基于 ISO 国际标准且 Apache-2.0 开源的 IBM FailureSensorIQ 作为主验证数据集，落地符合行业规范的 Ontology-First 建图、实体消歧（ER）与客观 MCQA 量化评测闭环。
