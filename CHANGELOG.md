@@ -6,6 +6,17 @@
 
 ---
 
+## [2026-11-22] Stage 2 Plan - 记录第二阶段实现方案（LLM Harness + Compact + 显性 CoT/ToT）
+- **提交类型**：`docs`
+- **变更背景**：基于第一阶段 FailureSensorIQ 四级极限压测与本地 `gemma4:12b` 遥测诊断结果，正式确立并归档第二阶段演进方案，将“裸模型调用 + 单轮问答”升级为“Harness 驾驭 + 三级无损优先上下文压缩 + 显性 Graph-CoT / Graph-ToT 思维范式”。
+- **主要修改**：
+  - 新增正式架构规划文档 `docs/stage2_harness_reasoning_plan.md`（涵盖总体融合架构、L0/L1/L2 Compact 策略、`LLMHarness` 护栏与账本、显性 `Graph-CoT` / `Graph-ToT` 数据结构与算法流、Streamlit 思维回放 + Ego-Graph + SHACL-lite 质检联动，以及 Stage 2.1 ~ 2.4 量化验收标准）。
+  - 更新 `README.md` 文档目录索引。
+- **验证方式**：文档结构与 Mermaid 语法审查完成，通过 `scripts/privacy_check.py --staged --require-changelog`。
+- **隐私与迁移自检**：确认文档无敏感密钥、无本机绝对路径、无个人邮箱。
+
+---
+
 ## [2026-11-22] Phase 3.2 - Ollama 原生控制与 FailureSensorIQ 四级难度极限压测引擎
 - **提交类型**：`feat`
 - **变更背景**：基于实测定位了 Ollama 默认 4K 上下文截断与 `gemma4:12b` 默认思考模式过度耗时的瓶颈，将原生 `think` / `num_ctx` 控制与四级难度极限压测引擎正式沉淀进项目源码，支持每集 100 题（及全量）断点续跑压测。
