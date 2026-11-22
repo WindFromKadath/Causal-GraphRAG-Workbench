@@ -14,8 +14,10 @@ from rich.panel import Panel
 from rich.table import Table
 
 from llm_graphrag_kg.adapters.failuresensoriq import (
+    DEFAULT_STRESS_SUITES,
     build_failuresensoriq_kg,
     evaluate_failuresensoriq,
+    plan_failuresensoriq_stress_suite,
     run_failuresensoriq_stress_suite,
 )
 from llm_graphrag_kg.config import load_config
@@ -410,12 +412,25 @@ def stress_fsiq(
     config_file: Annotated[
         Path, typer.Option("--config-file", help="YAML config path.")
     ] = Path("configs/failuresensoriq.yaml"),
-    limit: Annotated[int, typer.Option(help="Stratified questions per suite.")] = 100,
+    limit: Annotated[
+        int, typer.Option(help="Questions per suite (set 0 for FULL dataset).")
+    ] = 100,
     seed: Annotated[int, typer.Option(help="Random seed for stratified sampling.")] = 42,
+    suites: Annotated[
+        str | None,
+        typer.Option(
+            "--suites",
+            help="Comma-separated suite names (default: all 4 suites).",
+        ),
+    ] = None,
     modes: Annotated[
         str,
-        typer.Option(help="Comma-separated modes: llm_only,naive_rag,graphrag_kg"),
-    ] = "llm_only,naive_rag,graphrag_kg",
+        typer.Option(help="Comma-separated modes: llm_only,naive_rag,graphrag_kg_raw,graphrag_kg"),
+    ] = "llm_only,naive_rag,graphrag_kg_raw,graphrag_kg",
+    output_tag: Annotated[
+        str,
+        typer.Option("--output-tag", help="Subdirectory under output_dir to isolate runs/checkpoints."),
+    ] = "stress_test",
     provider: Annotated[
         str | None, typer.Option(help="Override LLM provider: ollama_native | openai_compat | mock")
     ] = None,
@@ -438,28 +453,98 @@ def stress_fsiq(
         bool,
         typer.Option("--resume/--no-resume", help="Resume from per-suite JSONL checkpoints."),
     ] = True,
+    progress_every: Annotated[
+        int,
+        typer.Option("--progress-every", help="Print live progress & ETA every N questions."),
+    ] = 50,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print exact question counts, cached progress, and ETA only."),
+    ] = False,
 ) -> None:
-    """Run 4-suite FailureSensorIQ stress test (standard, 10-opt, multi-answer, perturbed)."""
+    """Run full or sampled FailureSensorIQ multi-suite benchmark with live ETA and gap matrix."""
     cfg = load_config(config_path=config_file, llm_provider_override=provider)
     if think is not None:
         cfg.env.llm_think = think
     if num_ctx is not None:
         cfg.env.llm_num_ctx = num_ctx
 
+    suite_lookup = dict(DEFAULT_STRESS_SUITES)
+    selected_suites = DEFAULT_STRESS_SUITES
+    if suites:
+        wanted = [s.strip() for s in suites.split(",") if s.strip()]
+        unknown = [s for s in wanted if s not in suite_lookup]
+        if unknown:
+            console.print(
+                f"[red]Unknown suite(s): {unknown}. Valid: {list(suite_lookup.keys())}[/red]"
+            )
+            raise typer.Exit(code=1)
+        selected_suites = [(s, suite_lookup[s]) for s in wanted]
+
     mode_list = [m.strip() for m in modes.split(",") if m.strip()]
+
+    if dry_run:
+        plan_rows = plan_failuresensoriq_stress_suite(
+            data_dir=data_dir,
+            config=cfg,
+            output_tag=output_tag,
+            limit_per_suite=limit,
+            modes=mode_list,
+            resume=resume,
+            suites=selected_suites,
+        )
+        ptable = Table(
+            title=f"FailureSensorIQ Benchmark Plan (limit={'ALL' if limit <= 0 else limit}, tag={output_tag})"
+        )
+        ptable.add_column("Suite", style="cyan")
+        ptable.add_column("Mode", style="white")
+        ptable.add_column("Target Qs", style="green")
+        ptable.add_column("Cached", style="yellow")
+        ptable.add_column("Remaining Calls", style="magenta")
+        ptable.add_column("Est. Time", style="blue")
+        tot_calls = 0
+        tot_min = 0.0
+        for row in plan_rows:
+            tot_calls += int(row["remaining_calls"])
+            tot_min += float(row["est_minutes"])
+            ptable.add_row(
+                str(row["suite"]),
+                str(row["mode"]),
+                str(row["target_questions"]),
+                str(row["cached_done"]),
+                str(row["remaining_calls"]),
+                f"{row['est_minutes']:.1f} min",
+            )
+        console.print(ptable)
+        console.print(
+            Panel(
+                f"Total Remaining LLM Calls: {tot_calls:,}\n"
+                f"Estimated Wall Time (single GPU gemma4:12b, think=False): "
+                f"~{tot_min:.1f} min ({tot_min / 60.0:.2f} hours)\n"
+                f"Checkpoint Dir: {cfg.output_path / output_tag}",
+                title="Dry-Run Summary",
+                border_style="cyan",
+            )
+        )
+        return
+
     report, report_path = run_failuresensoriq_stress_suite(
         data_dir=data_dir,
         config=cfg,
+        output_tag=output_tag,
         limit_per_suite=limit,
         seed=seed,
         modes=mode_list,
         concise_json=concise_json,
         compact_anchor_only=compact,
         resume=resume,
+        progress_every=progress_every,
+        suites=selected_suites,
     )
 
+    label_limit = "ALL" if limit <= 0 else f"{limit} Qs/suite"
     table = Table(
-        title=f"FailureSensorIQ 4-Suite Stress Test ({limit} Qs/suite | {report.llm_model})"
+        title=f"FailureSensorIQ Multi-Suite Benchmark ({label_limit} | {report.llm_model})"
     )
     table.add_column("Suite", style="cyan")
     table.add_column("Mode", style="white")

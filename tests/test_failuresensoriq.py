@@ -7,12 +7,14 @@ from pathlib import Path
 
 from llm_graphrag_kg.adapters.failuresensoriq import (
     build_failuresensoriq_kg,
+    compute_pairwise_gaps,
     compute_set_f1,
     detect_asset_from_question,
     evaluate_failuresensoriq,
     normalize_option_id,
     normalize_sensor_name,
     parse_option_answers,
+    plan_failuresensoriq_stress_suite,
     run_failuresensoriq_stress_suite,
 )
 from llm_graphrag_kg.config import load_config
@@ -225,15 +227,31 @@ def test_failuresensoriq_ingest_and_eval_e2e(tmp_path: Path) -> None:
     assert suite_map["L4_perturbed_simple"]["graphrag_kg"].accuracy == 1.0
     assert suite_map["L4_perturbed_simple"]["graphrag_kg"].asset_linked_count == 1
 
-    # Calling again with resume=True should reuse checkpoints cleanly
-    resumed_report, _ = run_failuresensoriq_stress_suite(
+    # Verify full-dataset mode (limit=0), graphrag_kg_raw vs graphrag_kg, dry-run plan & pairwise gaps
+    plan = plan_failuresensoriq_stress_suite(
+        suite_dir,
+        cfg,
+        output_dir=tmp_path / "stress_out",
+        output_tag="full_check",
+        limit_per_suite=0,
+        modes=["llm_only", "graphrag_kg_raw", "graphrag_kg"],
+    )
+    assert len(plan) == 12
+    assert all(row["remaining_calls"] == row["total_in_file"] for row in plan)
+
+    full_report, full_md = run_failuresensoriq_stress_suite(
         suite_dir,
         cfg,
         storage_dir=storage_dir,
         output_dir=tmp_path / "stress_out",
-        limit_per_suite=2,
-        modes=["llm_only", "graphrag_kg"],
+        output_tag="full_check",
+        limit_per_suite=0,
+        modes=["llm_only", "graphrag_kg_raw", "graphrag_kg"],
         concise_json=True,
         resume=True,
+        progress_every=1,
     )
-    assert len(resumed_report.suites) == 4
+    assert full_md.is_file()
+    assert "Pairwise Win/Loss" in full_md.read_text(encoding="utf-8")
+    gaps = compute_pairwise_gaps(full_report.suites[0].details, primary_mode="graphrag_kg")
+    assert len(gaps) == 2

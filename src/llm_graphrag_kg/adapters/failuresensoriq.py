@@ -816,6 +816,9 @@ def _sample_stratified_rows(
     limit: int,
     seed: int,
 ) -> list[dict[str, Any]]:
+    if limit <= 0 or limit >= len(rows):
+        return list(rows)
+
     rng = random.Random(seed)
     by_bucket: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -847,6 +850,110 @@ def _sample_stratified_rows(
     return sampled
 
 
+def compute_pairwise_gaps(
+    details: dict[str, list[EvalQuestionOutcome]],
+    *,
+    primary_mode: str = "graphrag_kg",
+) -> list[dict[str, Any]]:
+    """Compute exact per-question Win/Loss gap matrix comparing primary_mode vs every baseline."""
+    if primary_mode not in details:
+        return []
+    primary_by_id = {item.question_id: item.is_correct for item in details[primary_mode]}
+    gaps: list[dict[str, Any]] = []
+    for other_mode, items in details.items():
+        if other_mode == primary_mode:
+            continue
+        both_ok = both_bad = primary_only = other_only = 0
+        for item in items:
+            if item.question_id not in primary_by_id:
+                continue
+            p_ok = primary_by_id[item.question_id]
+            o_ok = item.is_correct
+            if p_ok and o_ok:
+                both_ok += 1
+            elif p_ok and not o_ok:
+                primary_only += 1
+            elif not p_ok and o_ok:
+                other_only += 1
+            else:
+                both_bad += 1
+        total = both_ok + both_bad + primary_only + other_only
+        net = primary_only - other_only
+        gaps.append(
+            {
+                "primary": primary_mode,
+                "baseline": other_mode,
+                "total": total,
+                "both_correct": both_ok,
+                "primary_wins": primary_only,
+                "baseline_wins": other_only,
+                "both_wrong": both_bad,
+                "net_gain_questions": net,
+                "net_gain_pct": round((net / total) * 100.0, 2) if total else 0.0,
+            }
+        )
+    return gaps
+
+
+MODE_ESTIMATED_SECONDS: dict[str, float] = {
+    "llm_only": 0.65,
+    "naive_rag": 1.00,
+    "graphrag_kg_raw": 1.50,
+    "graphrag_kg": 0.96,
+}
+
+
+def plan_failuresensoriq_stress_suite(
+    data_dir: Path,
+    config: AppConfig,
+    *,
+    output_dir: Path | None = None,
+    output_tag: str = "stress_test",
+    limit_per_suite: int = 0,
+    modes: list[str] | None = None,
+    resume: bool = True,
+    suites: list[tuple[str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Estimate exact question counts, cached checkpoint progress, and wall time before launching."""
+    active_suites = suites or DEFAULT_STRESS_SUITES
+    selected_modes = modes or ["llm_only", "naive_rag", "graphrag_kg_raw", "graphrag_kg"]
+    base_out = (output_dir or config.output_path) / output_tag
+
+    plan_rows: list[dict[str, Any]] = []
+    for suite_name, filename in active_suites:
+        q_path = data_dir / filename
+        if not q_path.is_file():
+            raise FileNotFoundError(f"Missing FailureSensorIQ suite file: {q_path}")
+        with q_path.open("r", encoding="utf-8") as fh:
+            total_in_file = sum(1 for line in fh if line.strip())
+        target_q = total_in_file if limit_per_suite <= 0 else min(limit_per_suite, total_in_file)
+
+        for mode in selected_modes:
+            ckpt_path = base_out / suite_name / f"{suite_name}_{mode}.checkpoint.jsonl"
+            done_q = 0
+            if resume and ckpt_path.is_file():
+                seen_ids: set[int] = set()
+                with ckpt_path.open("r", encoding="utf-8") as fh:
+                    for line in fh:
+                        if line.strip():
+                            seen_ids.add(int(json.loads(line).get("question_id", -1)))
+                done_q = min(len(seen_ids), target_q)
+            remaining_q = max(0, target_q - done_q)
+            est_sec = remaining_q * MODE_ESTIMATED_SECONDS.get(mode, 1.1)
+            plan_rows.append(
+                {
+                    "suite": suite_name,
+                    "mode": mode,
+                    "total_in_file": total_in_file,
+                    "target_questions": target_q,
+                    "cached_done": done_q,
+                    "remaining_calls": remaining_q,
+                    "est_minutes": round(est_sec / 60.0, 1),
+                }
+            )
+    return plan_rows
+
+
 def evaluate_failuresensoriq(
     questions_path: Path,
     config: AppConfig,
@@ -860,6 +967,7 @@ def evaluate_failuresensoriq(
     concise_json: bool = True,
     compact_anchor_only: bool = True,
     resume: bool = True,
+    progress_every: int = 50,
     llm: BaseLLMClient | None = None,
     embedder: BaseEmbeddingClient | None = None,
 ) -> tuple[EvaluationSummary, Path]:
@@ -911,6 +1019,9 @@ def evaluate_failuresensoriq(
 
         rel_totals: dict[str, int] = defaultdict(int)
         rel_correct: dict[str, int] = defaultdict(int)
+        mode_start = time.perf_counter()
+        newly_evaluated = 0
+        total_target = len(sampled)
 
         with ckpt_path.open("a", encoding="utf-8") as ckpt_fh:
             for idx_row, row in enumerate(sampled):
@@ -981,13 +1092,14 @@ def evaluate_failuresensoriq(
                         f"Question: {question}\n\nOptions:\n{options_block}\n\n{instruction}"
                     )
                 else:
+                    use_compact_mode = False if mode == "graphrag_kg_raw" else compact_anchor_only
                     kg_ctx, seed_names, expanded_nodes = _build_graphrag_mcqa_context(
                         row,
                         resolved_asset,
                         graph_store,
                         vector_store,
                         active_embedder,
-                        compact_anchor_only=compact_anchor_only,
+                        compact_anchor_only=use_compact_mode,
                     )
                     prompt = (
                         f"{kg_ctx}\n\n"
@@ -999,73 +1111,94 @@ def evaluate_failuresensoriq(
 
                 prompt_toks = estimate_tokens(prompt) + estimate_tokens(mcqa_system)
                 repairs_used = 0
+                raw_resp = ""
+                pred_list: list[str] = []
                 t0 = time.perf_counter()
 
-                if concise_json:
-                    valid_norm_set = set(norm_option_ids)
-
-                    def _validate_mcqa(
-                        model_out: MCQAAnswerSchema,
-                        expected_n: int = expected_count,
-                        valid_set: set[str] = valid_norm_set,
-                    ) -> str | None:
-                        cleaned_ids = list(
-                            dict.fromkeys(normalize_option_id(x) for x in model_out.answers)
-                        )
-                        bad = [x for x in cleaned_ids if x not in valid_set]
-                        if bad:
-                            return f"Invalid option IDs {bad}; allowed={sorted(valid_set)}"
-                        if len(cleaned_ids) != expected_n:
-                            return f"Expected exactly {expected_n} distinct option ID(s), got {len(cleaned_ids)}"
-                        return None
-
-                    harness = LLMHarness(
-                        active_llm,
-                        json_repair_retries=config.harness.json_repair_retries,
-                        max_calls=config.harness.json_repair_retries + 2,
-                        max_wall_seconds=config.harness.max_wall_seconds,
-                    )
+                for transient_try in range(2):
                     try:
-                        parsed_obj, raw_resp = harness.run_structured(
-                            prompt,
-                            MCQAAnswerSchema,
-                            step_name=f"fsiq_{mode}_q{qid}",
-                            system_prompt=mcqa_system,
-                            temperature=0.0,
-                            max_tokens=96,
-                            extra_validator=_validate_mcqa,
-                        )
-                        pred_list = sorted(
-                            list(dict.fromkeys(normalize_option_id(x) for x in parsed_obj.answers))
-                        )
-                        repairs_used = harness.ledger.total_repairs
-                    except ValueError:
-                        repairs_used = harness.ledger.total_repairs
-                        raw_resp = _call_llm_complete(
-                            active_llm,
-                            prompt,
-                            system_prompt=mcqa_system,
-                            temperature=0.0,
-                            json_mode=True,
-                            max_tokens=96,
-                        )
-                        pred_list = sorted(
-                            parse_option_answers(
-                                raw_resp, raw_option_ids, expected_count=expected_count
+                        if concise_json:
+                            valid_norm_set = set(norm_option_ids)
+
+                            def _validate_mcqa(
+                                model_out: MCQAAnswerSchema,
+                                expected_n: int = expected_count,
+                                valid_set: set[str] = valid_norm_set,
+                            ) -> str | None:
+                                cleaned_ids = list(
+                                    dict.fromkeys(normalize_option_id(x) for x in model_out.answers)
+                                )
+                                bad = [x for x in cleaned_ids if x not in valid_set]
+                                if bad:
+                                    return f"Invalid option IDs {bad}; allowed={sorted(valid_set)}"
+                                if len(cleaned_ids) != expected_n:
+                                    return (
+                                        f"Expected exactly {expected_n} distinct option ID(s), "
+                                        f"got {len(cleaned_ids)}"
+                                    )
+                                return None
+
+                            harness = LLMHarness(
+                                active_llm,
+                                json_repair_retries=config.harness.json_repair_retries,
+                                max_calls=config.harness.json_repair_retries + 2,
+                                max_wall_seconds=config.harness.max_wall_seconds,
                             )
-                        )
-                else:
-                    raw_resp = _call_llm_complete(
-                        active_llm,
-                        prompt,
-                        system_prompt=mcqa_system,
-                        temperature=0.0,
-                        json_mode=False,
-                        max_tokens=768,
-                    )
-                    pred_list = sorted(
-                        parse_option_answers(raw_resp, raw_option_ids, expected_count=expected_count)
-                    )
+                            try:
+                                parsed_obj, raw_resp = harness.run_structured(
+                                    prompt,
+                                    MCQAAnswerSchema,
+                                    step_name=f"fsiq_{mode}_q{qid}",
+                                    system_prompt=mcqa_system,
+                                    temperature=0.0,
+                                    max_tokens=96,
+                                    extra_validator=_validate_mcqa,
+                                )
+                                pred_list = sorted(
+                                    list(
+                                        dict.fromkeys(
+                                            normalize_option_id(x) for x in parsed_obj.answers
+                                        )
+                                    )
+                                )
+                                repairs_used = harness.ledger.total_repairs
+                            except ValueError:
+                                repairs_used = harness.ledger.total_repairs
+                                raw_resp = _call_llm_complete(
+                                    active_llm,
+                                    prompt,
+                                    system_prompt=mcqa_system,
+                                    temperature=0.0,
+                                    json_mode=True,
+                                    max_tokens=96,
+                                )
+                                pred_list = sorted(
+                                    parse_option_answers(
+                                        raw_resp, raw_option_ids, expected_count=expected_count
+                                    )
+                                )
+                        else:
+                            raw_resp = _call_llm_complete(
+                                active_llm,
+                                prompt,
+                                system_prompt=mcqa_system,
+                                temperature=0.0,
+                                json_mode=False,
+                                max_tokens=768,
+                            )
+                            pred_list = sorted(
+                                parse_option_answers(
+                                    raw_resp, raw_option_ids, expected_count=expected_count
+                                )
+                            )
+                        break
+                    except (TimeoutError, OSError, ConnectionError) as exc:
+                        if transient_try == 0:
+                            time.sleep(2.0)
+                            continue
+                        raw_resp = f"[TRANSIENT_ERROR] {type(exc).__name__}: {exc}"
+                        pred_list = []
+
                 dt = round(time.perf_counter() - t0, 3)
 
                 is_ok = pred_list == gold_list
@@ -1097,6 +1230,20 @@ def evaluate_failuresensoriq(
                 details[mode].append(outcome)
                 ckpt_fh.write(outcome.model_dump_json() + "\n")
                 ckpt_fh.flush()
+
+                newly_evaluated += 1
+                done_now = len(details[mode])
+                if progress_every > 0 and (done_now % progress_every == 0 or done_now == total_target):
+                    elapsed = max(time.perf_counter() - mode_start, 1e-6)
+                    rate = newly_evaluated / elapsed
+                    rem_min = ((total_target - done_now) / rate) / 60.0 if rate > 0 else 0.0
+                    cur_acc = sum(1 for x in details[mode] if x.is_correct) / done_now * 100.0
+                    print(
+                        f"[{suite_name} | {mode}] {done_now}/{total_target} "
+                        f"({done_now / total_target * 100:.1f}%) | acc={cur_acc:.1f}% | "
+                        f"avg={elapsed / newly_evaluated:.2f}s | ETA={rem_min:.1f}m",
+                        flush=True,
+                    )
 
         items = details[mode]
         total_n = len(items)
@@ -1160,17 +1307,36 @@ def evaluate_failuresensoriq(
         "",
         "## 1. 总体指标对比",
         "",
-        "| 检索/推理模式 | Exact Match | 准确率 | Macro-F1 | 空回复数 | 资产链接率 | 平均耗时 (s/题) |",
-        "|---|---|---|---|---|---|---|",
+        "| 检索/推理模式 | Exact Match | 准确率 | Macro-F1 | 平均 Prompt Tok | 修复重试 | 空回复 | 平均耗时 (s/题) |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for m in summary.modes:
-        link_pct = (m.asset_linked_count / m.total * 100) if m.total else 0.0
         lines.append(
             f"| `{m.mode}` | {m.correct} / {m.total} | **{m.accuracy * 100:.1f}%** | "
-            f"{m.macro_f1 * 100:.1f}% | {m.empty_responses} | {link_pct:.0f}% | {m.avg_latency_seconds:.2f}s |"
+            f"{m.macro_f1 * 100:.1f}% | {m.avg_prompt_tokens:.0f} | {m.total_repairs} | "
+            f"{m.empty_responses} | {m.avg_latency_seconds:.2f}s |"
         )
 
-    lines.extend(["", "## 2. 分题型准确率拆解", ""])
+    pairwise = compute_pairwise_gaps(details, primary_mode="graphrag_kg")
+    if pairwise:
+        lines.extend(
+            [
+                "",
+                "## 2. 逐题胜负差距矩阵 (Pairwise Win/Loss vs `graphrag_kg`)",
+                "",
+                "| 对比基线 | 共同答对 | 仅 KG 答对 (Win) | 仅基线答对 (Loss) | 共同答错 | 净胜题数 (Net Gain) |",
+                "|---|---|---|---|---|---|",
+            ]
+        )
+        for g in pairwise:
+            sign = "+" if g["net_gain_questions"] >= 0 else ""
+            lines.append(
+                f"| `graphrag_kg` vs `{g['baseline']}` | {g['both_correct']} | "
+                f"**{g['primary_wins']}** | {g['baseline_wins']} | {g['both_wrong']} | "
+                f"**{sign}{g['net_gain_questions']} ({sign}{g['net_gain_pct']:.2f}%)** |"
+            )
+
+    lines.extend(["", "## 3. 分题型准确率拆解", ""])
     for m in summary.modes:
         lines.append(f"### 模式：`{m.mode}`")
         lines.append("| 题型 (Relevancy) | 正确 / 总数 | 准确率 |")
@@ -1191,19 +1357,21 @@ def run_failuresensoriq_stress_suite(
     *,
     storage_dir: Path | None = None,
     output_dir: Path | None = None,
+    output_tag: str = "stress_test",
     limit_per_suite: int = 100,
     seed: int = 42,
     modes: list[str] | None = None,
     concise_json: bool = True,
     compact_anchor_only: bool = True,
     resume: bool = True,
+    progress_every: int = 50,
     suites: list[tuple[str, str]] | None = None,
     llm: BaseLLMClient | None = None,
     embedder: BaseEmbeddingClient | None = None,
 ) -> tuple[StressSuiteReport, Path]:
-    """Run all 4 FailureSensorIQ difficulty suites with checkpoint/resume and unified reporting."""
+    """Run FailureSensorIQ difficulty suites with checkpoint/resume and unified gap reporting."""
     active_suites = suites or DEFAULT_STRESS_SUITES
-    base_out = (output_dir or config.output_path) / "stress_test"
+    base_out = (output_dir or config.output_path) / output_tag
     base_out.mkdir(parents=True, exist_ok=True)
 
     summaries: list[EvaluationSummary] = []
@@ -1223,6 +1391,7 @@ def run_failuresensoriq_stress_suite(
             concise_json=concise_json,
             compact_anchor_only=compact_anchor_only,
             resume=resume,
+            progress_every=progress_every,
             llm=llm,
             embedder=embedder,
         )
@@ -1243,16 +1412,20 @@ def run_failuresensoriq_stress_suite(
     report_md = base_out / "stress_test_report.md"
 
     total_q_all = sum(s.total_questions for s in summaries)
+    scope_desc = "全量 (ALL)" if limit_per_suite <= 0 else f"每集 `{limit_per_suite}` 题"
     lines = [
-        "# FailureSensorIQ 四级难度极限压测汇总报告",
+        "# FailureSensorIQ 全量 / 多级难度基准对比报告",
         "",
-        f"- **每集抽样题数**：`{limit_per_suite}` 题（共 `{total_q_all}` 题，`seed={seed}`）",
+        f"- **评测规模**：{scope_desc}（累计 `{total_q_all}` 题，`seed={seed}`）",
         f"- **模型配置**：`{report.llm_provider}` / `{report.llm_model}` | `concise_json={concise_json}`",
         "",
-        "## 1. 四级难度 Exact Match / Macro-F1 对比总表",
+        "## 1. 多基线 Exact Match / Macro-F1 对比总表",
         "",
-        "| 难度分级 (Suite) | 题数 | `llm_only` | `naive_rag` | `graphrag_kg` | KG 相对提升 (vs LLM) | 平均延迟 (KG) |",
-        "|---|---|---|---|---|---|---|",
+        (
+            "| 难度分级 (Suite) | 题数 | `llm_only` | `naive_rag` | `graphrag_kg_raw` | "
+            "`graphrag_kg` | KG vs LLM | Compact vs Raw |"
+        ),
+        "|---|---|---|---|---|---|---|---|",
     ]
     for s in summaries:
         by_m = {m.mode: m for m in s.modes}
@@ -1266,27 +1439,46 @@ def run_failuresensoriq_stress_suite(
 
         llm_m = by_m.get("llm_only")
         rag_m = by_m.get("naive_rag")
+        raw_m = by_m.get("graphrag_kg_raw")
         kg_m = by_m.get("graphrag_kg")
-        delta = (
-            f"+{(kg_m.accuracy - llm_m.accuracy) * 100:.1f}%"
+        delta_llm = (
+            f"{(kg_m.accuracy - llm_m.accuracy) * 100:+.1f}%"
             if (kg_m and llm_m)
             else "-"
         )
-        kg_lat = f"{kg_m.avg_latency_seconds:.2f}s" if kg_m else "-"
+        delta_raw = (
+            f"{(kg_m.accuracy - raw_m.accuracy) * 100:+.1f}%"
+            if (kg_m and raw_m)
+            else "-"
+        )
         lines.append(
             f"| `{s.suite_name}` | {s.total_questions} | {_fmt(llm_m)} | {_fmt(rag_m)} | "
-            f"{_fmt(kg_m)} | {delta} | {kg_lat} |"
+            f"{_fmt(raw_m)} | {_fmt(kg_m)} | {delta_llm} | {delta_raw} |"
         )
 
-    lines.extend(["", "## 2. 稳定性与实体链接诊断", ""])
-    lines.append("| 难度分级 | 模式 | 空回复数 | 资产自动链接率 | 平均耗时 (s/题) |")
-    lines.append("|---|---|---|---|---|")
+    lines.extend(["", "## 2. 逐题胜负差距矩阵 (Pairwise Win/Loss vs `graphrag_kg`)", ""])
+    lines.append(
+        "| 难度分级 | 对比基线 | 共同答对 | 仅 KG 答对 | 仅基线答对 | 共同答错 | 净胜差距 |"
+    )
+    lines.append("|---|---|---|---|---|---|---|")
+    for s in summaries:
+        for g in compute_pairwise_gaps(s.details, primary_mode="graphrag_kg"):
+            sign = "+" if g["net_gain_questions"] >= 0 else ""
+            lines.append(
+                f"| `{s.suite_name}` | `{g['baseline']}` | {g['both_correct']} | "
+                f"**{g['primary_wins']}** | {g['baseline_wins']} | {g['both_wrong']} | "
+                f"**{sign}{g['net_gain_questions']} ({sign}{g['net_gain_pct']:.2f}%)** |"
+            )
+
+    lines.extend(["", "## 3. 成本、延迟与稳定性遥测", ""])
+    lines.append("| 难度分级 | 模式 | 平均 Prompt Tok | 修复重试 | 空回复数 | 资产链接率 | 平均耗时 |")
+    lines.append("|---|---|---|---|---|---|---|")
     for s in summaries:
         for m in s.modes:
             link_pct = (m.asset_linked_count / m.total * 100) if m.total else 0.0
             lines.append(
-                f"| `{s.suite_name}` | `{m.mode}` | {m.empty_responses} | "
-                f"{link_pct:.1f}% | {m.avg_latency_seconds:.2f}s |"
+                f"| `{s.suite_name}` | `{m.mode}` | {m.avg_prompt_tokens:.0f} | "
+                f"{m.total_repairs} | {m.empty_responses} | {link_pct:.1f}% | {m.avg_latency_seconds:.2f}s |"
             )
 
     report_md.write_text("\n".join(lines) + "\n", encoding="utf-8")

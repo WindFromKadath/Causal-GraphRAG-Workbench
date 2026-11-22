@@ -6,6 +6,17 @@
 
 ---
 
+## [2026-11-22] Benchmark Prep - 全量四基线评测就绪（`--limit 0`、逐题胜负差距矩阵与 `--dry-run` 预估）
+- **提交类型**：`feat`
+- **变更背景**：为开展大规模/全量 FailureSensorIQ 对比测试、精确量化 `llm_only` / `naive_rag` / `graphrag_kg_raw`（Stage 1）与 `graphrag_kg`（Stage 2.1 Compact+Harness）之间的真实差距，完善全量挂机评测与统计分析能力。
+- **主要修改**：
+  - 升级 `src/llm_graphrag_kg/adapters/failuresensoriq.py`：支持 `limit=0` 全量跑测、新增 `graphrag_kg_raw`（Stage 1 无压缩基线）与 `graphrag_kg`（Stage 2.1 压缩基线）同场四模式对照、新增逐题胜负差距矩阵 `compute_pairwise_gaps()`、执行前耗时/断点预估器 `plan_failuresensoriq_stress_suite()`、每 N 题实时进度与 ETA 打印，以及单题瞬时网络超时自动重试保护。
+  - 在 `src/llm_graphrag_kg/cli.py` 的 `stress-fsiq` 中新增 `--suites`、`--output-tag`、`--progress-every` 与 `--dry-run` 选项，并同步扩展 `tests/test_failuresensoriq.py`。
+- **验证方式**：通过 `ruff check`、`pytest -v`（15/15 全部通过），并在本地真实 FailureSensorIQ 4 套全量数据上运行 `--dry-run` 核对精确题量与耗时预估。
+- **隐私与迁移自检**：通过 `scripts/privacy_check.py --staged --require-changelog`，无密钥、本机路径或运行数据入库。
+
+---
+
 ## [2026-11-22] Stage 2.1 - LLMHarness 推理驾驭层与三级无损优先上下文压缩 (Compact)
 - **提交类型**：`feat`
 - **变更背景**：落地 `docs/stage2_harness_reasoning_plan.md` 规划的 Stage 2.1 底座，解决裸模型调用缺乏预算护栏、JSON 解析无自愈以及高连通子图噪声导致 12B 模型注意力串台的问题。
