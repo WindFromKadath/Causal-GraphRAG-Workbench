@@ -30,6 +30,7 @@ from llm_graphrag_kg.providers.factory import create_llm_client
 from llm_graphrag_kg.viz.audit_report import export_audit_artifacts
 from llm_graphrag_kg.viz.graphml_exporter import export_graphml
 from llm_graphrag_kg.viz.html_exporter import export_pyvis_html
+from llm_graphrag_kg.viz.schema_validator import validate_kg_shacl_lite
 
 app = typer.Typer(
     name="llm-graphrag-kg",
@@ -142,6 +143,51 @@ def audit(
             border_style="green",
         )
     )
+
+
+@app.command("shacl-check")
+def shacl_check(
+    storage_dir: Annotated[
+        Path | None, typer.Option("--storage", help="Persisted storage dir.")
+    ] = None,
+    output_file: Annotated[
+        Path | None, typer.Option("--output", help="Optional Markdown report output path.")
+    ] = None,
+    config_file: Annotated[
+        Path | None, typer.Option("--config-file", help="Optional YAML config path.")
+    ] = Path("configs/failuresensoriq.yaml"),
+) -> None:
+    """Run 100% full-graph SHACL-lite ontology & provenance compliance audit."""
+    cfg = load_config(config_path=config_file, llm_provider_override="mock")
+    pipeline = GraphRAGPipeline(cfg)
+    pipeline.load(storage_dir)
+    report = validate_kg_shacl_lite(pipeline.graph_store, pipeline.vector_store, cfg)
+
+    table = Table(
+        title=(
+            f"SHACL-lite Audit ({report.profile} | {report.overall_status} | "
+            f"{report.compliance_score * 100:.1f}%)"
+        )
+    )
+    table.add_column("Status", style="cyan")
+    table.add_column("Check ID", style="white")
+    table.add_column("Title", style="white")
+    table.add_column("Violations", style="yellow")
+    for chk in report.checks:
+        st_str = (
+            "[green]PASS[/green]"
+            if chk.passed
+            else ("[red]FAIL[/red]" if chk.severity == "error" else "[yellow]WARN[/yellow]")
+        )
+        table.add_row(st_str, chk.check_id, chk.title, str(chk.violation_count))
+    console.print(table)
+
+    out_md = output_file or (cfg.output_path / "shacl_validation_report.md")
+    out_md.parent.mkdir(parents=True, exist_ok=True)
+    out_md.write_text(report.to_markdown(), encoding="utf-8")
+    console.print(f"[cyan]SHACL-lite report written to:[/cyan] {out_md}")
+    if report.overall_status == "FAIL":
+        raise typer.Exit(code=1)
 
 
 @app.command("export-viz")

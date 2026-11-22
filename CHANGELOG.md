@@ -6,6 +6,21 @@
 
 ---
 
+## [2026-11-22] Stage 2.4 - 可视化核验工作台全面升级（锁定 FailureSensorIQ 主对象：Ego-Graph 聚焦、CoT/ToT 可读思维回放与 SHACL-lite 全量本体质检）
+- **提交类型**：`feat`
+- **变更背景**：完成 `docs/stage2_harness_reasoning_plan.md` 第二阶段最后一个子阶段（Stage 2.4），锁定 `configs/failuresensoriq.yaml`（233 实体 / 692 边 / 四层严格 ISO 本体）作为默认主验收对象，解决大图毛线球拥挤、思维回放哈希 ID 难读及缺乏全量本体合规质检三大痛点。
+- **主要修改**：
+  - 新增 `src/llm_graphrag_kg/viz/schema_validator.py`（`validate_kg_shacl_lite`）：实现 100% 全量图谱 SHACL-lite 本体与溯源合规质检，覆盖 5 项通用图卫生规则（实体类型白名单、无悬空边、无自环边、零幽灵实体/三元组原文溯源、孤立实体检测）及 3 项 ISO FailureSensorIQ 四层本体强约束（`HAS_FAILURE_MODE` / `INSTANCE_OF` / `MONITORED_BY` 定义域与值域、FailureMode 资产隔离与传感器覆盖、SignalChannel ER 拼写洁净度），支持 Markdown 报告导出。
+  - 升级 `src/llm_graphrag_kg/viz/workbench_data.py`：新增单设备/单节点 `extract_ego_subgraph()`（支持 1~2 跳局部聚焦、关系过滤与节点上限控制，在 233 节点 FailureSensorIQ 图谱上单设备可降噪 **-82% ~ -88%**）与 `build_readable_citation_maps()`（将冷冰冰的 `ent_*` / `rel_*` 哈希 ID 翻译为人类可读实体与三元组标签）。
+  - 全面升级 `src/llm_graphrag_kg/viz/app.py`（6 标签页闭环工作台）：默认锁定 `configs/failuresensoriq.yaml`（仍支持侧边栏切换全部 YAML）；新增 `ollama_native` 与 `think=False` 开关；「交互图谱」页默认对 >80 节点大图启用 **Ego-Graph 聚焦模式**；「问答与思维回放」页集成 `ppr/hybrid/local/global` + `cot/tot/direct` + `Compact` 压缩遥测 + `GroundingAudit` 红绿灯 + **ToT 分支双轨（`G`/`S` 得分 + L2 剪枝记忆）与 CoT 可读溯源卡片**；新增独立「🛡️ SHACL-lite 本体质检」页。
+  - 在 `src/llm_graphrag_kg/cli.py` 新增 `llm-graphrag-kg shacl-check` 终端质检命令，并在 `tests/test_workbench.py` 扩充 Ego-Graph、可读引用、SHACL-lite 正/负例注入检测及 6 标签页无头 `AppTest` 回归测试。
+- **验证方式**：
+  - `ruff check` 0 告警，`pytest -v` **23/23 全部通过**（含 Streamlit `AppTest` 无头渲染校验默认锁定 `configs/failuresensoriq.yaml` 与 6 标签页）。
+  - 在本地真实 `storage/failuresensoriq`（233 实体 / 692 关系）上执行 `llm-graphrag-kg shacl-check --config-file configs/failuresensoriq.yaml`：**8/8 规则 100.0% 通过（0 Error / 0 Warning）**；单设备 Ego-Graph（如 `pump` 233 → 27 节点 `-88.4%`、`steam turbine` 233 → 29 节点 `-87.6%`）验证无毛线球拥挤。
+- **隐私与迁移自检**：通过 `scripts/privacy_check.py --staged --require-changelog`，无密钥、本机路径或私有数据入库。
+
+---
+
 ## [2026-11-22] Stage 2.3 - 显性可控 Graph-ToT 引擎（ToG 范式 + L2 剪枝折叠）与 GraphRAG-Bench 多跳基准适配器
 - **提交类型**：`feat`
 - **变更背景**：落地 `docs/stage2_harness_reasoning_plan.md` 规划的 Stage 2.3，解决多症状并发工业诊断与高难多跳问答中“需要并行展开竞争假设、逐分支查图并用反证剪枝”的核心需求，并接入更高难度的 `GraphRAG-Bench (ICLR)` 医学多跳基准进行跨范式实证。
