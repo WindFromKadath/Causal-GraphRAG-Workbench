@@ -58,6 +58,24 @@ class VisualizationConfig(BaseModel):
     physics_enabled: bool = True
 
 
+class HarnessConfig(BaseModel):
+    enable_compact: bool = True
+    max_context_tokens: int = 4000
+    max_entities: int = 24
+    max_subgraph_relations: int = 30
+    max_evidence_chunks: int = 6
+    json_repair_retries: int = 1
+    max_calls: int = 12
+    max_wall_seconds: float = 180.0
+
+
+class ReasoningConfig(BaseModel):
+    default_paradigm: str = "direct"  # direct | cot | tot
+    tot_beam_width: int = 3
+    tot_max_depth: int = 2
+    tot_max_llm_calls: int = 6
+
+
 class EnvSettings(BaseSettings):
     """Sensitive and endpoint-specific settings loaded from environment / `.env`."""
 
@@ -93,6 +111,8 @@ class AppConfig(BaseModel):
     community: CommunityConfig = Field(default_factory=CommunityConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     visualization: VisualizationConfig = Field(default_factory=VisualizationConfig)
+    harness: HarnessConfig = Field(default_factory=HarnessConfig)
+    reasoning: ReasoningConfig = Field(default_factory=ReasoningConfig)
     env: EnvSettings = Field(default_factory=EnvSettings)
 
     def resolve_path(self, rel_or_abs: str | Path) -> Path:
@@ -167,5 +187,7 @@ def load_config(
         community=CommunityConfig(**raw.get("community", {})),
         retrieval=RetrievalConfig(**raw.get("retrieval", {})),
         visualization=VisualizationConfig(**raw.get("visualization", {})),
+        harness=HarnessConfig(**raw.get("harness", {})),
+        reasoning=ReasoningConfig(**raw.get("reasoning", {})),
         env=env_settings,
     )

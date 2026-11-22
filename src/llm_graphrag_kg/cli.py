@@ -194,6 +194,10 @@ def query(
         bool,
         typer.Option("--export-html", help="Export PyVis HTML highlighting the retrieved subgraph."),
     ] = False,
+    compact: Annotated[
+        bool | None,
+        typer.Option("--compact/--no-compact", help="Enable Stage 2.1 L0/L1 context compaction."),
+    ] = None,
     config_file: Annotated[Path | None, typer.Option(help="Optional YAML config path.")] = None,
 ) -> None:
     """Execute a GraphRAG query and inspect answer, subgraph trace, and source evidences."""
@@ -203,7 +207,9 @@ def query(
         embedding_provider_override=embedder,
     )
     pipeline = GraphRAGPipeline(cfg)
-    result = pipeline.query(question, mode=mode, storage_dir=storage_dir)
+    result = pipeline.query(
+        question, mode=mode, storage_dir=storage_dir, enable_compact=compact
+    )
 
     console.print(Panel(result.answer, title=f"GraphRAG Answer ({result.mode})", border_style="green"))
 
@@ -215,6 +221,14 @@ def query(
     trace_table.add_row("Subgraph Relations", str(len(result.trace.relation_ids)))
     trace_table.add_row("Communities Used", str(result.trace.community_ids))
     trace_table.add_row("Evidence Chunks", str(len(result.evidences)))
+    comp = result.metadata.get("compaction")
+    if isinstance(comp, dict):
+        trace_table.add_row(
+            "Context Compaction",
+            f"{comp['raw_tokens_est']} -> {comp['compacted_tokens_est']} tok "
+            f"(-{comp['compression_ratio'] * 100:.1f}%, dropped_nodes={comp['dropped_nodes']}, "
+            f"levels={comp['applied_levels']})",
+        )
     console.print(trace_table)
 
     if export_html:
@@ -416,6 +430,10 @@ def stress_fsiq(
         bool,
         typer.Option("--concise-json/--verbose-text", help="Enforce compact JSON answer output."),
     ] = True,
+    compact: Annotated[
+        bool,
+        typer.Option("--compact/--no-compact", help="Use Stage 2.1 L0 question-anchor compaction."),
+    ] = True,
     resume: Annotated[
         bool,
         typer.Option("--resume/--no-resume", help="Resume from per-suite JSONL checkpoints."),
@@ -436,6 +454,7 @@ def stress_fsiq(
         seed=seed,
         modes=mode_list,
         concise_json=concise_json,
+        compact_anchor_only=compact,
         resume=resume,
     )
 
@@ -446,6 +465,8 @@ def stress_fsiq(
     table.add_column("Mode", style="white")
     table.add_column("Exact Match", style="green")
     table.add_column("Macro-F1", style="yellow")
+    table.add_column("Avg Prompt Tok", style="blue")
+    table.add_column("Repairs", style="white")
     table.add_column("Empty", style="red")
     table.add_column("Avg Latency", style="magenta")
     for s in report.suites:
@@ -455,6 +476,8 @@ def stress_fsiq(
                 m.mode,
                 f"{m.accuracy * 100:.1f}% ({m.correct}/{m.total})",
                 f"{m.macro_f1 * 100:.1f}%",
+                f"{m.avg_prompt_tokens:.0f}",
+                str(m.total_repairs),
                 str(m.empty_responses),
                 f"{m.avg_latency_seconds:.2f}s",
             )

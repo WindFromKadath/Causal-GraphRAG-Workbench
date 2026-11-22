@@ -6,6 +6,21 @@
 
 ---
 
+## [2026-11-22] Stage 2.1 - LLMHarness 推理驾驭层与三级无损优先上下文压缩 (Compact)
+- **提交类型**：`feat`
+- **变更背景**：落地 `docs/stage2_harness_reasoning_plan.md` 规划的 Stage 2.1 底座，解决裸模型调用缺乏预算护栏、JSON 解析无自愈以及高连通子图噪声导致 12B 模型注意力串台的问题。
+- **主要修改**：
+  - 新增 `src/llm_graphrag_kg/harness/context_compactor.py`：实现依赖零外部库的中英文 Token 估算器及三级无损优先压缩（L0 规则级子图锚点裁剪与紧凑符号编码、L1 小数安全分句的证据抽取式压缩、L2 保留数值/单位/实体/`chunk_id` 的结构化状态折叠 `fold_state_l2`）。
+  - 新增 `src/llm_graphrag_kg/harness/runtime.py`：`LLMHarness` 统一封装 Prompt 编译、调用次数/耗时熔断护栏、Pydantic 结构化 JSON 校验与自动修复重试（`run_structured`）及全链路遥测账本 `TraceLedger`。
+  - 在 `config.py` 新增向后兼容的 `HarnessConfig` / `ReasoningConfig`；将 `ContextCompactor` 与 `LLMHarness` 接入 `pipelines/retriever.py`、`pipelines/workflow.py`、`adapters/failuresensoriq.py`（实现 L0 题干锚点隔离，剥离资产名防子串误匹配）与 `cli.py`（`query --compact` 与 `stress-fsiq --compact` 压缩遥测展示）。
+  - 新增单元测试套件 `tests/test_harness.py`。
+- **验证方式**：
+  - `ruff check` 0 告警，`pytest -v` **15/15 全部通过**。
+  - 本机 Ollama `gemma4:12b` 实跑 `FailureSensorIQ L3_multi_answers`（100 题，`seed=42`，`think=False`）量化验收：KG 上下文从 `449.2 tok / 64.5 节点` 压降至 `49.9 tok / 6.6 节点`（**Token 缩减 `-88.9%`**），Exact Match 从 **94.0% 跃升至 100.0%（100/100）**，Macro-F1 从 **95.5% 跃升至 100.0%**，单题平均延迟从 **1.55s 降至 0.96s**，0 空回复。
+- **隐私与迁移自检**：通过 `scripts/privacy_check.py --staged --require-changelog`，无密钥、本机路径或私有数据入库。
+
+---
+
 ## [2026-11-22] Release Prep - 补充 MIT 开源协议、统一本地模型表述并完成 GitHub 推送前审核
 - **提交类型**：`chore`
 - **变更背景**：在首次公开推送至 GitHub 仓库前，补充 MIT 开源协议并对文档与代码注释中的本地模型示例名称做通用化收口。

@@ -18,6 +18,8 @@ from llm_graphrag_kg.core.schema import (
     Relation,
     SubgraphTrace,
 )
+from llm_graphrag_kg.harness.context_compactor import ContextCompactor
+from llm_graphrag_kg.harness.runtime import LLMHarness
 
 QA_SYSTEM_PROMPT = (
     "You are a grounded GraphRAG assistant. Answer the user's question accurately using ONLY "
@@ -42,6 +44,9 @@ class GraphRAGRetriever:
         k_hops: int = 1,
         top_k_communities: int = 3,
         temperature: float = 0.2,
+        enable_compact: bool = True,
+        compactor: ContextCompactor | None = None,
+        harness: LLMHarness | None = None,
     ) -> None:
         self.llm = llm
         self.embedder = embedder
@@ -52,6 +57,9 @@ class GraphRAGRetriever:
         self.k_hops = k_hops
         self.top_k_communities = top_k_communities
         self.temperature = temperature
+        self.enable_compact = enable_compact
+        self.compactor = compactor or ContextCompactor()
+        self.harness = harness or LLMHarness(llm, compactor=self.compactor)
 
     def query(self, question: str, *, mode: str = "hybrid") -> QueryResult:
         normalized_mode = mode.strip().lower()
@@ -143,16 +151,40 @@ class GraphRAGRetriever:
                 )
 
         evidences = list(evidence_by_chunk.values())
-        prompt = self._compose_prompt(
-            question=question,
-            mode=normalized_mode,
-            entities=expanded_entities,
-            relations=sub_relations,
-            communities=selected_communities,
-            evidences=evidences,
-        )
-        answer = self.llm.complete(
+        compaction_meta: dict[str, object] | None = None
+
+        if self.enable_compact:
+            compacted = self.compactor.compact_graphrag_context(
+                question=question,
+                seed_entity_ids=[e.entity_id for e in seed_entities],
+                entities=expanded_entities,
+                relations=sub_relations,
+                communities=selected_communities,
+                evidences=evidences,
+            )
+            compaction_meta = compacted.report.model_dump()
+            prompt = LLMHarness.compile_prompt(
+                context_text=compacted.full_text,
+                question=question,
+                task_instruction=(
+                    f"Retrieval Mode: {normalized_mode}\n"
+                    "Please provide a clear, structured Chinese answer citing relevant chunk IDs."
+                ),
+            )
+        else:
+            prompt = self._compose_prompt(
+                question=question,
+                mode=normalized_mode,
+                entities=expanded_entities,
+                relations=sub_relations,
+                communities=selected_communities,
+                evidences=evidences,
+            )
+
+        self.harness.reset_ledger()
+        answer = self.harness.run_text(
             prompt,
+            step_name=f"graphrag_query_{normalized_mode}",
             system_prompt=QA_SYSTEM_PROMPT,
             temperature=self.temperature,
             json_mode=False,
@@ -164,18 +196,23 @@ class GraphRAGRetriever:
             relation_ids=[r.relation_id for r in sub_relations],
             community_ids=[c.community_id for c in selected_communities],
         )
+        metadata: dict[str, object] = {
+            "seed_entity_names": [e.name for e in seed_entities],
+            "expanded_entity_count": len(expanded_entities),
+            "relation_count": len(sub_relations),
+            "community_count": len(selected_communities),
+            "harness_ledger": self.harness.ledger.summary(),
+        }
+        if compaction_meta is not None:
+            metadata["compaction"] = compaction_meta
+
         return QueryResult(
             question=question,
             mode=normalized_mode,
             answer=answer,
             trace=trace,
             evidences=evidences,
-            metadata={
-                "seed_entity_names": [e.name for e in seed_entities],
-                "expanded_entity_count": len(expanded_entities),
-                "relation_count": len(sub_relations),
-                "community_count": len(selected_communities),
-            },
+            metadata=metadata,
         )
 
     @staticmethod

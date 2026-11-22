@@ -31,6 +31,8 @@ from pydantic import BaseModel, Field
 from llm_graphrag_kg.config import AppConfig
 from llm_graphrag_kg.core.interfaces import BaseEmbeddingClient, BaseLLMClient
 from llm_graphrag_kg.core.schema import Entity, GraphAuditStats, Relation, TextChunk
+from llm_graphrag_kg.harness.context_compactor import estimate_tokens
+from llm_graphrag_kg.harness.runtime import LLMHarness
 from llm_graphrag_kg.pipelines.community import CommunityDetector
 from llm_graphrag_kg.pipelines.extraction import make_entity_id, make_relation_id
 from llm_graphrag_kg.providers.factory import (
@@ -168,6 +170,12 @@ class IngestStats(BaseModel):
     audit: GraphAuditStats
 
 
+class MCQAAnswerSchema(BaseModel):
+    """Structured JSON output contract enforced by `LLMHarness.run_structured`."""
+
+    answers: list[str] = Field(min_length=1)
+
+
 class EvalQuestionOutcome(BaseModel):
     """Per-question evaluation outcome across one baseline mode."""
 
@@ -183,13 +191,15 @@ class EvalQuestionOutcome(BaseModel):
     is_correct: bool
     f1_score: float = 0.0
     latency_seconds: float = 0.0
+    prompt_tokens_est: int = 0
+    repair_attempts: int = 0
     raw_response: str
     seed_entities: list[str] = Field(default_factory=list)
     expanded_nodes: int = 0
 
 
 class ModeMetrics(BaseModel):
-    """Aggregated accuracy, F1, empty-rate, and latency metrics for one evaluation mode."""
+    """Aggregated accuracy, F1, empty-rate, token budget, and latency metrics for one mode."""
 
     mode: str
     total: int
@@ -199,6 +209,8 @@ class ModeMetrics(BaseModel):
     empty_responses: int = 0
     asset_linked_count: int = 0
     avg_latency_seconds: float = 0.0
+    avg_prompt_tokens: float = 0.0
+    total_repairs: int = 0
     by_relevancy: dict[str, dict[str, float | int]] = Field(default_factory=dict)
 
 
@@ -579,18 +591,140 @@ def _build_graphrag_mcqa_context(
     graph_store: Any,
     vector_store: Any,
     embedder: BaseEmbeddingClient,
+    *,
+    compact_anchor_only: bool = True,
 ) -> tuple[str, list[str], int]:
-    """Retrieve structured asset-exact KG subgraph + provenance chunks for an MCQA question."""
+    """Retrieve structured asset-exact KG subgraph for an MCQA question.
+
+    When `compact_anchor_only=True` (Stage 2.1 L0 compaction), seeds are strictly extracted
+    from the question text (stripping the asset name to prevent substring collisions such as
+    `power` inside `power transformer`) rather than letting distractor options bloat the subgraph.
+    """
     question = str(row.get("question", ""))
     options = [str(o) for o in row.get("options", [])]
+    all_entities = graph_store.get_all_entities()
+    all_relations = graph_store.get_all_relations()
 
     asset_eid = make_entity_id(f"equipment::{resolved_asset}") if resolved_asset else ""
+
+    if compact_anchor_only and resolved_asset:
+        q_low = re.sub(r"\s+", " ", question.strip()).lower()
+        q_no_asset = re.sub(re.escape(resolved_asset), " ", q_low)
+
+        # 1. Match FailureModes explicitly mentioned in the question for this asset (longest first)
+        asset_fms = [
+            e
+            for e in all_entities
+            if e.entity_type == "FailureMode" and e.metadata.get("asset") == resolved_asset
+        ]
+        matched_fms: list[Entity] = []
+        for ent in sorted(
+            asset_fms,
+            key=lambda e: len(str(e.metadata.get("failure_category", ""))),
+            reverse=True,
+        ):
+            fm_raw = str(ent.metadata.get("failure_category", "")).lower()
+            if fm_raw and fm_raw in q_no_asset:
+                matched_fms.append(ent)
+
+        # 2. Match SignalChannels explicitly mentioned in the question (longest first)
+        all_sensors = [e for e in all_entities if e.entity_type == "SignalChannel"]
+        matched_sensors: list[Entity] = []
+        occupied_spans: list[str] = []
+        for ent in sorted(
+            all_sensors,
+            key=lambda e: max([len(e.name), *(len(a) for a in e.aliases)]),
+            reverse=True,
+        ):
+            cand_names = sorted(
+                [ent.name.lower(), *(a.lower() for a in ent.aliases)],
+                key=len,
+                reverse=True,
+            )
+            for cname in cand_names:
+                if not cname or len(cname) < 3:
+                    continue
+                if re.search(rf"(?<![a-z0-9]){re.escape(cname)}(?![a-z0-9])", q_no_asset):
+                    if not any(cname in prev for prev in occupied_spans):
+                        matched_sensors.append(ent)
+                        occupied_spans.append(cname)
+                    break
+
+        ent_by_id = {e.entity_id: e for e in all_entities}
+        asset_fm_id_set = {e.entity_id for e in asset_fms}
+
+        # Direction A: Question specifies FailureMode(s) -> return exact monitored sensors
+        if matched_fms:
+            target_fm_ids = {e.entity_id for e in matched_fms}
+            fm_to_sensors: dict[str, list[str]] = defaultdict(list)
+            chunk_ids: list[str] = []
+            for rel in all_relations:
+                if rel.relation_type == "MONITORED_BY" and rel.source_id in target_fm_ids:
+                    fm_ent = ent_by_id.get(rel.source_id)
+                    s_ent = ent_by_id.get(rel.target_id)
+                    if fm_ent and s_ent:
+                        fm_label = str(fm_ent.metadata.get("failure_category", fm_ent.name))
+                        alias_note = f" (aliases: {', '.join(s_ent.aliases)})" if s_ent.aliases else ""
+                        fm_to_sensors[fm_label].append(f"{s_ent.name}{alias_note}")
+                        chunk_ids.extend(rel.source_chunk_ids)
+
+            fact_lines = [
+                f"- Asset `{resolved_asset}` | FailureMode `{fm_label}` "
+                f"--[MONITORED_BY]--> [{', '.join(sorted(set(sensors)))}]"
+                for fm_label, sensors in sorted(fm_to_sensors.items())
+            ]
+            seed_names = [resolved_asset, *(e.name for e in matched_fms)]
+            expanded_count = 1 + len(matched_fms) + sum(len(set(v)) for v in fm_to_sensors.values())
+            cid_note = f" (chunks: {', '.join(dict.fromkeys(chunk_ids[:2]))})" if chunk_ids else ""
+            ctx = (
+                f"Structured Knowledge Graph Facts for Asset `{resolved_asset}`{cid_note} "
+                "(L0 Anchor-Compacted ISO Complete List):\n"
+                + ("\n".join(fact_lines) if fact_lines else "- (no sensors linked)")
+            )
+            return ctx, seed_names, expanded_count
+
+        # Direction B: Question specifies SignalChannel(s) -> return exact asset FailureModes monitored by it
+        if matched_sensors:
+            target_s_ids = {e.entity_id for e in matched_sensors}
+            sensor_to_fms: dict[str, list[str]] = defaultdict(list)
+            chunk_ids = []
+            for rel in all_relations:
+                if (
+                    rel.relation_type == "MONITORED_BY"
+                    and rel.source_id in asset_fm_id_set
+                    and rel.target_id in target_s_ids
+                ):
+                    fm_ent = ent_by_id.get(rel.source_id)
+                    s_ent = ent_by_id.get(rel.target_id)
+                    if fm_ent and s_ent:
+                        fm_label = str(fm_ent.metadata.get("failure_category", fm_ent.name))
+                        sensor_to_fms[s_ent.name].append(fm_label)
+                        chunk_ids.extend(rel.source_chunk_ids)
+
+            fact_lines = []
+            for s_ent in matched_sensors:
+                fms_for_s = sorted(set(sensor_to_fms.get(s_ent.name, [])))
+                alias_note = f" (aliases: {', '.join(s_ent.aliases)})" if s_ent.aliases else ""
+                fact_lines.append(
+                    f"- Asset `{resolved_asset}` | SignalChannel `{s_ent.name}{alias_note}` "
+                    f"monitors ONLY these FailureModes: [{', '.join(fms_for_s) if fms_for_s else 'NONE'}]"
+                )
+            seed_names = [resolved_asset, *(e.name for e in matched_sensors)]
+            expanded_count = 1 + len(matched_sensors) + sum(len(set(v)) for v in sensor_to_fms.values())
+            cid_note = f" (chunks: {', '.join(dict.fromkeys(chunk_ids[:3]))})" if chunk_ids else ""
+            ctx = (
+                f"Structured Knowledge Graph Facts for Asset `{resolved_asset}`{cid_note} "
+                "(L0 Anchor-Compacted ISO Complete List):\n"
+                + "\n".join(fact_lines)
+            )
+            return ctx, seed_names, expanded_count
+
+    # Legacy / fallback path: expand from question + options
     seed_ids: list[str] = []
     if asset_eid and graph_store.get_entity(asset_eid) is not None:
         seed_ids.append(asset_eid)
 
     q_and_opts = f"{question} {' '.join(options)}".lower()
-    all_entities = graph_store.get_all_entities()
     for ent in all_entities:
         if ent.entity_type == "FailureMode":
             if resolved_asset and ent.metadata.get("asset") != resolved_asset:
@@ -614,8 +748,8 @@ def _build_graphrag_mcqa_context(
         and (not resolved_asset or e.metadata.get("asset") == resolved_asset)
     }
 
-    fact_lines: list[str] = []
-    fm_to_sensors: dict[str, list[str]] = defaultdict(list)
+    fact_lines = []
+    fm_to_sensors_fb: dict[str, list[str]] = defaultdict(list)
     for rel in sub_relations:
         if rel.relation_type == "MONITORED_BY" and rel.source_id in asset_fm_ids:
             fm_ent = ent_map.get(rel.source_id)
@@ -623,10 +757,10 @@ def _build_graphrag_mcqa_context(
             if fm_ent and s_ent:
                 fm_label = str(fm_ent.metadata.get("failure_category", fm_ent.name))
                 alias_note = f" (aliases: {', '.join(s_ent.aliases)})" if s_ent.aliases else ""
-                fm_to_sensors[fm_label].append(f"{s_ent.name}{alias_note}")
+                fm_to_sensors_fb[fm_label].append(f"{s_ent.name}{alias_note}")
 
-    for fm_label in sorted(fm_to_sensors.keys()):
-        sensors_joined = ", ".join(sorted(set(fm_to_sensors[fm_label])))
+    for fm_label in sorted(fm_to_sensors_fb.keys()):
+        sensors_joined = ", ".join(sorted(set(fm_to_sensors_fb[fm_label])))
         fact_lines.append(
             f"- Asset `{resolved_asset or 'unknown'}` | FailureMode `{fm_label}` "
             f"--[MONITORED_BY]--> [{sensors_joined}]"
@@ -724,6 +858,7 @@ def evaluate_failuresensoriq(
     seed: int = 42,
     modes: list[str] | None = None,
     concise_json: bool = True,
+    compact_anchor_only: bool = True,
     resume: bool = True,
     llm: BaseLLMClient | None = None,
     embedder: BaseEmbeddingClient | None = None,
@@ -847,30 +982,92 @@ def evaluate_failuresensoriq(
                     )
                 else:
                     kg_ctx, seed_names, expanded_nodes = _build_graphrag_mcqa_context(
-                        row, resolved_asset, graph_store, vector_store, active_embedder
+                        row,
+                        resolved_asset,
+                        graph_store,
+                        vector_store,
+                        active_embedder,
+                        compact_anchor_only=compact_anchor_only,
                     )
                     prompt = (
                         f"{kg_ctx}\n\n"
                         f"Question: {question}\n\nOptions:\n{options_block}\n\n"
-                        "Note: The KG list above enumerates the ISO-relevant sensors for each listed "
-                        "failure mode on this asset. If the question asks for IRRELEVANT / NOT-relevant "
-                        f"option(s), select the option(s) NOT linked in the KG.\n{instruction}"
+                        "Note: The KG list above enumerates the ISO-relevant links for the target "
+                        "entity on this asset. If the question asks for IRRELEVANT / NOT-relevant "
+                        f"option(s), select the option(s) NOT listed in the KG.\n{instruction}"
                     )
 
+                prompt_toks = estimate_tokens(prompt) + estimate_tokens(mcqa_system)
+                repairs_used = 0
                 t0 = time.perf_counter()
-                raw_resp = _call_llm_complete(
-                    active_llm,
-                    prompt,
-                    system_prompt=mcqa_system,
-                    temperature=0.0,
-                    json_mode=concise_json,
-                    max_tokens=96 if concise_json else 768,
-                )
+
+                if concise_json:
+                    valid_norm_set = set(norm_option_ids)
+
+                    def _validate_mcqa(
+                        model_out: MCQAAnswerSchema,
+                        expected_n: int = expected_count,
+                        valid_set: set[str] = valid_norm_set,
+                    ) -> str | None:
+                        cleaned_ids = list(
+                            dict.fromkeys(normalize_option_id(x) for x in model_out.answers)
+                        )
+                        bad = [x for x in cleaned_ids if x not in valid_set]
+                        if bad:
+                            return f"Invalid option IDs {bad}; allowed={sorted(valid_set)}"
+                        if len(cleaned_ids) != expected_n:
+                            return f"Expected exactly {expected_n} distinct option ID(s), got {len(cleaned_ids)}"
+                        return None
+
+                    harness = LLMHarness(
+                        active_llm,
+                        json_repair_retries=config.harness.json_repair_retries,
+                        max_calls=config.harness.json_repair_retries + 2,
+                        max_wall_seconds=config.harness.max_wall_seconds,
+                    )
+                    try:
+                        parsed_obj, raw_resp = harness.run_structured(
+                            prompt,
+                            MCQAAnswerSchema,
+                            step_name=f"fsiq_{mode}_q{qid}",
+                            system_prompt=mcqa_system,
+                            temperature=0.0,
+                            max_tokens=96,
+                            extra_validator=_validate_mcqa,
+                        )
+                        pred_list = sorted(
+                            list(dict.fromkeys(normalize_option_id(x) for x in parsed_obj.answers))
+                        )
+                        repairs_used = harness.ledger.total_repairs
+                    except ValueError:
+                        repairs_used = harness.ledger.total_repairs
+                        raw_resp = _call_llm_complete(
+                            active_llm,
+                            prompt,
+                            system_prompt=mcqa_system,
+                            temperature=0.0,
+                            json_mode=True,
+                            max_tokens=96,
+                        )
+                        pred_list = sorted(
+                            parse_option_answers(
+                                raw_resp, raw_option_ids, expected_count=expected_count
+                            )
+                        )
+                else:
+                    raw_resp = _call_llm_complete(
+                        active_llm,
+                        prompt,
+                        system_prompt=mcqa_system,
+                        temperature=0.0,
+                        json_mode=False,
+                        max_tokens=768,
+                    )
+                    pred_list = sorted(
+                        parse_option_answers(raw_resp, raw_option_ids, expected_count=expected_count)
+                    )
                 dt = round(time.perf_counter() - t0, 3)
 
-                pred_list = sorted(
-                    parse_option_answers(raw_resp, raw_option_ids, expected_count=expected_count)
-                )
                 is_ok = pred_list == gold_list
                 f1 = compute_set_f1(pred_list, gold_list)
 
@@ -891,6 +1088,8 @@ def evaluate_failuresensoriq(
                     is_correct=is_ok,
                     f1_score=f1,
                     latency_seconds=dt,
+                    prompt_tokens_est=prompt_toks,
+                    repair_attempts=repairs_used,
                     raw_response=raw_resp[:400],
                     seed_entities=seed_names[:8],
                     expanded_nodes=expanded_nodes,
@@ -907,6 +1106,8 @@ def evaluate_failuresensoriq(
         empty_n = sum(1 for item in items if not item.raw_response.strip())
         linked_n = sum(1 for item in items if item.asset_linked)
         avg_lat = round(sum(item.latency_seconds for item in items) / total_n, 3) if total_n else 0.0
+        avg_ptok = round(sum(item.prompt_tokens_est for item in items) / total_n, 1) if total_n else 0.0
+        repairs_n = sum(item.repair_attempts for item in items)
 
         by_rel = {
             rel: {
@@ -926,6 +1127,8 @@ def evaluate_failuresensoriq(
                 empty_responses=empty_n,
                 asset_linked_count=linked_n,
                 avg_latency_seconds=avg_lat,
+                avg_prompt_tokens=avg_ptok,
+                total_repairs=repairs_n,
                 by_relevancy=by_rel,
             )
         )
@@ -992,6 +1195,7 @@ def run_failuresensoriq_stress_suite(
     seed: int = 42,
     modes: list[str] | None = None,
     concise_json: bool = True,
+    compact_anchor_only: bool = True,
     resume: bool = True,
     suites: list[tuple[str, str]] | None = None,
     llm: BaseLLMClient | None = None,
@@ -1017,6 +1221,7 @@ def run_failuresensoriq_stress_suite(
             seed=seed,
             modes=modes,
             concise_json=concise_json,
+            compact_anchor_only=compact_anchor_only,
             resume=resume,
             llm=llm,
             embedder=embedder,

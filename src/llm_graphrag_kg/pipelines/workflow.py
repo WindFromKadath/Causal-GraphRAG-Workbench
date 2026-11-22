@@ -13,6 +13,8 @@ from llm_graphrag_kg.core.interfaces import (
     BaseVectorStore,
 )
 from llm_graphrag_kg.core.schema import GraphAuditStats, QueryResult
+from llm_graphrag_kg.harness.context_compactor import ContextCompactor
+from llm_graphrag_kg.harness.runtime import LLMHarness
 from llm_graphrag_kg.pipelines.community import CommunityDetector
 from llm_graphrag_kg.pipelines.extraction import KnowledgeExtractor
 from llm_graphrag_kg.pipelines.ingestion import DocumentIngestor
@@ -134,11 +136,28 @@ class GraphRAGPipeline:
         mode: str | None = None,
         storage_dir: Path | None = None,
         auto_load: bool = True,
+        enable_compact: bool | None = None,
     ) -> QueryResult:
-        """Run an online GraphRAG query with full subgraph and provenance trace."""
+        """Run an online GraphRAG query with full subgraph, compaction, and provenance trace."""
         if auto_load and not self.graph_store.get_all_entities():
             self.load(storage_dir)
 
+        use_compact = (
+            self.config.harness.enable_compact if enable_compact is None else enable_compact
+        )
+        compactor = ContextCompactor(
+            max_context_tokens=self.config.harness.max_context_tokens,
+            max_entities=self.config.harness.max_entities,
+            max_relations=self.config.harness.max_subgraph_relations,
+            max_evidence_chunks=self.config.harness.max_evidence_chunks,
+        )
+        harness = LLMHarness(
+            self.llm,
+            compactor=compactor,
+            json_repair_retries=self.config.harness.json_repair_retries,
+            max_calls=self.config.harness.max_calls,
+            max_wall_seconds=self.config.harness.max_wall_seconds,
+        )
         retriever = GraphRAGRetriever(
             llm=self.llm,
             embedder=self.embedder,
@@ -149,5 +168,8 @@ class GraphRAGPipeline:
             k_hops=self.config.retrieval.k_hops,
             top_k_communities=self.config.retrieval.top_k_communities,
             temperature=self.config.retrieval.temperature,
+            enable_compact=use_compact,
+            compactor=compactor,
+            harness=harness,
         )
         return retriever.query(question, mode=mode or self.config.retrieval.default_mode)
