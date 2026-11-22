@@ -6,6 +6,19 @@
 
 ---
 
+## [2026-11-22] Harder Benchmark Prep - 跨语言公平性修复与 GraphRAG-Bench 双域（Medical + Novel）断点评测就绪
+- **提交类型**：`feat`
+- **变更背景**：为开展 Stage 2 在更高难度多跳数据集（`GraphRAG-Bench` 医学全量与长篇叙事双域）上的公平四范式对比评测，修复 `direct` / `cot` 回答语言硬编码偏差，并补全双域建图、断点续跑与检索证据召回指标。
+- **主要修改**：
+  - 修复 `src/llm_graphrag_kg/pipelines/retriever.py` 与 `src/llm_graphrag_kg/reasoning/cot.py`：将原硬编码“仅用中文回答”改为严格跟随提问语言（`in the same language as the question`），确保 `naive_rag`、`hybrid_direct`、`ppr_cot`、`ppr_tot` 在英文高难基准上绝对同口径公平对比。
+  - 升级 `src/llm_graphrag_kg/adapters/graphrag_bench.py` 与 `src/llm_graphrag_kg/cli.py`：支持全量医学语料与指定长篇叙事（`--source-filter`）双域零泄漏建图、新增 JSONL 逐题断点续跑（`--output-tag` / `--resume` / `--progress-every`）与 **检索证据召回率（`retrieval_evidence_recall`）** 指标。
+- **验证方式**：
+  - `ruff check` 0 告警，`pytest -q` **23/23 全部通过**。
+  - 本地零泄漏建成两套大图：`storage/graphrag_bench_medical`（全量 1.05 MB：53 文档 / 1,528 切片 / 450 实体 / 6,522 边 / 9 社区）与 `storage/graphrag_bench_novel`（`Novel-8559` + `Novel-44557`：702 切片 / 450 实体 / 2,683 边 / 15 社区）。
+- **隐私与迁移自检**：通过 `scripts/privacy_check.py --staged --require-changelog`，外部语料与图谱索引均严格隔离在 `.gitignore` 目录。
+
+---
+
 ## [2026-11-22] Stage 2.4 - 可视化核验工作台全面升级（锁定 FailureSensorIQ 主对象：Ego-Graph 聚焦、CoT/ToT 可读思维回放与 SHACL-lite 全量本体质检）
 - **提交类型**：`feat`
 - **变更背景**：完成 `docs/stage2_harness_reasoning_plan.md` 第二阶段最后一个子阶段（Stage 2.4），锁定 `configs/failuresensoriq.yaml`（233 实体 / 692 边 / 四层严格 ISO 本体）作为默认主验收对象，解决大图毛线球拥挤、思维回放哈希 ID 难读及缺乏全量本体合规质检三大痛点。

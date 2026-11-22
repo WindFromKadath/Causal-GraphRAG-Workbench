@@ -248,7 +248,8 @@ class GraphRAGRetriever:
                     question=question,
                     task_instruction=(
                         f"Retrieval Mode: {normalized_mode}\n"
-                        "Please provide a clear, structured Chinese answer citing relevant chunk IDs."
+                        "Please provide a clear, concise answer in the same language as the "
+                        "question, citing relevant chunk IDs."
                     ),
                 )
             else:
@@ -486,6 +487,7 @@ class GraphRAGRetriever:
             sections.append("Source Text Evidences:\n" + "\n".join(ev_lines))
 
         sections.append(
-            "Please provide a clear, structured Chinese answer citing relevant chunk IDs."
+            "Please provide a clear, concise answer in the same language as the question, "
+            "citing relevant chunk IDs."
         )
         return "\n\n".join(sections)

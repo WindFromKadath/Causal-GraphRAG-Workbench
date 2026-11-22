@@ -19,7 +19,7 @@ COT_SYSTEM_PROMPT = (
     "(1) `anchor`: identify query anchor entities; "
     "(2) `graph_traverse`: cite exact retrieved relation IDs connecting entities; "
     "(3) `evidence_check`: verify thresholds/rules/details against cited chunk IDs; "
-    "(4) `synthesis`: produce the grounded final answer in Chinese (or the question's language). "
+    "(4) `synthesis`: produce a concise grounded final answer in the EXACT SAME LANGUAGE as the question. "
     "NEVER invent entity_id, relation_id, or chunk_id values that do not appear in the context. "
     "Return ONLY valid JSON matching the schema."
 )
@@ -290,7 +290,7 @@ class GraphCoTEngine:
             "    {\n"
             '      "step_id": 1,\n'
             '      "stage": "anchor | graph_traverse | evidence_check | synthesis",\n'
-            '      "claim": "concise factual step in Chinese",\n'
+            '      "claim": "concise factual step in the same language as the question",\n'
             '      "cited_entity_ids": ["ent_..."],\n'
             '      "cited_relation_ids": ["rel_..."],\n'
             '      "cited_chunk_ids": ["doc_...::chunk_..."]\n'

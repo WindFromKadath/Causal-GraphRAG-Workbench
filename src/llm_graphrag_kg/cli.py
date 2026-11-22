@@ -725,7 +725,14 @@ def ingest_grb(
     ] = Path("configs/graphrag_bench.yaml"),
     max_chars: Annotated[
         int, typer.Option("--max-chars", help="Corpus character budget (0 for full corpus).")
-    ] = 120_000,
+    ] = 0,
+    source_filter: Annotated[
+        str | None,
+        typer.Option("--source-filter", help="Optional comma-separated corpus_name filter (for novel.json)."),
+    ] = None,
+    storage_dir: Annotated[
+        Path | None, typer.Option("--storage", help="Optional override storage dir.")
+    ] = None,
     fast_lexical: Annotated[
         bool,
         typer.Option(
@@ -742,7 +749,9 @@ def ingest_grb(
     stats = ingest_graphrag_bench_corpus(
         corpus_path=corpus,
         config=cfg,
+        storage_dir=storage_dir,
         max_chars=max_chars,
+        source_filter=source_filter,
         fast_lexical=fast_lexical,
     )
     console.print(
@@ -750,7 +759,7 @@ def ingest_grb(
             f"Docs: {stats.doc_count} | Chunks: {stats.chunk_count}\n"
             f"Entities: {stats.entity_count} | Relations: {stats.relation_count} | "
             f"Communities: {stats.community_count}\n"
-            f"Storage: {cfg.storage_path}",
+            f"Storage: {storage_dir or cfg.storage_path}",
             title="GraphRAG-Bench Corpus Ingested",
             border_style="green",
         )
@@ -769,15 +778,30 @@ def eval_grb(
     config_file: Annotated[
         Path, typer.Option("--config-file", help="YAML config path.")
     ] = Path("configs/graphrag_bench.yaml"),
+    storage_dir: Annotated[
+        Path | None, typer.Option("--storage", help="Optional override storage dir.")
+    ] = None,
+    output_tag: Annotated[
+        str, typer.Option("--output-tag", help="Subdirectory tag for checkpoints and reports.")
+    ] = "default",
     question_type: Annotated[
         str,
         typer.Option("--question-type", help="Filter: Complex Reasoning | Fact Retrieval | ALL"),
     ] = "Complex Reasoning",
+    source_filter: Annotated[
+        str | None, typer.Option("--source-filter", help="Optional source filter (e.g. Novel-44557).")
+    ] = None,
     limit: Annotated[int, typer.Option(help="Number of questions to evaluate.")] = 10,
     modes: Annotated[
         str,
         typer.Option(help="Comma-separated modes: naive_rag,hybrid_direct,ppr_cot,ppr_tot"),
     ] = "naive_rag,hybrid_direct,ppr_cot,ppr_tot",
+    resume: Annotated[
+        bool, typer.Option("--resume/--no-resume", help="Resume from JSONL checkpoints.")
+    ] = True,
+    progress_every: Annotated[
+        int, typer.Option("--progress-every", help="Print progress every N questions.")
+    ] = 5,
     provider: Annotated[
         str | None, typer.Option(help="Override LLM provider: ollama_native | openai_compat | mock")
     ] = None,
@@ -787,7 +811,7 @@ def eval_grb(
     ] = False,
     num_ctx: Annotated[
         int | None, typer.Option("--num-ctx", help="Override Ollama context length.")
-    ] = 32768,
+    ] = 16384,
 ) -> None:
     """Evaluate Naive RAG vs Hybrid vs PPR+CoT vs PPR+ToT on GraphRAG-Bench."""
     cfg = load_config(config_path=config_file, llm_provider_override=provider)
@@ -800,9 +824,14 @@ def eval_grb(
     report, report_path = evaluate_graphrag_bench(
         questions_path=questions,
         config=cfg,
+        storage_dir=storage_dir,
+        output_tag=output_tag,
         question_type=question_type,
+        source_filter=source_filter,
         limit=limit,
         modes=mode_list,
+        resume=resume,
+        progress_every=progress_every,
     )
     table = Table(
         title=f"GraphRAG-Bench ({report.question_type_filter} | {report.total_questions} Qs | {report.llm_model})"
@@ -810,7 +839,8 @@ def eval_grb(
     table.add_column("Mode", style="cyan")
     table.add_column("Token-F1", style="green")
     table.add_column("ROUGE-L", style="yellow")
-    table.add_column("Evidence Cov", style="blue")
+    table.add_column("Ans EvCov", style="blue")
+    table.add_column("Ret EvRec", style="blue")
     table.add_column("Grounding", style="magenta")
     table.add_column("Calls", style="white")
     table.add_column("Avg Latency", style="white")
@@ -821,6 +851,7 @@ def eval_grb(
             f"{s.avg_token_f1 * 100:.1f}%",
             f"{s.avg_rouge_l * 100:.1f}%",
             f"{s.avg_evidence_coverage * 100:.1f}%",
+            f"{s.avg_retrieval_evidence_recall * 100:.1f}%",
             g_str,
             f"{s.avg_llm_calls:.1f}",
             f"{s.avg_latency_seconds:.2f}s",

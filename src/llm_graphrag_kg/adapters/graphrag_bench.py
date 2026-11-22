@@ -90,11 +90,13 @@ def compute_evidence_coverage(prediction: str, evidence_text: str) -> float:
 
 class GRBQuestionOutcome(BaseModel):
     question_id: str
+    source: str = ""
     question_type: str
     mode: str
     token_f1: float
     rouge_l: float
     evidence_coverage: float
+    retrieval_evidence_recall: float = 0.0
     grounding_score: float | None = None
     tot_branches: int = 0
     tot_pruned: int = 0
@@ -109,6 +111,7 @@ class GRBModeSummary(BaseModel):
     avg_token_f1: float
     avg_rouge_l: float
     avg_evidence_coverage: float
+    avg_retrieval_evidence_recall: float = 0.0
     avg_grounding_score: float | None = None
     avg_llm_calls: float
     avg_latency_seconds: float
@@ -116,49 +119,64 @@ class GRBModeSummary(BaseModel):
 
 class GRBEvalReport(BaseModel):
     question_type_filter: str
+    source_filter: str = "ALL"
     total_questions: int
     llm_model: str
     modes: list[GRBModeSummary] = Field(default_factory=list)
 
 
-def _extract_lexical_medical_kg(
+def _extract_lexical_kg(
     chunks: list[Any],
+    *,
+    domain: str = "medical",
 ) -> tuple[list[Entity], list[Relation]]:
-    """Zero-LLM deterministic domain phrase & co-occurrence KG builder for rapid large-corpus indexing."""
-    # Extract recurring multi-word clinical noun phrases / acronyms directly from corpus text
-    phrase_pattern = re.compile(
-        r"\b(?:[A-Z]{2,6}|[a-z]+(?:\s+[a-z]+){1,2})\b"
-    )
-    domain_anchors = (
+    """Zero-LLM deterministic entity & co-occurrence KG builder (supports medical & novel)."""
+    medical_anchors = (
         "cancer", "carcinoma", "lymphoma", "leukemia", "tumor", "biopsy", "surgery", "radiation",
         "therapy", "treatment", "risk", "factor", "skin", "cell", "basal", "immune", "transplant",
         "sun", "uv", "exam", "imaging", "scan", "recurrence", "lymph", "node", "chemotherapy",
         "diagnosis", "symptom", "bump", "lesion", "margin", "mohs", "follow-up", "screening",
         "mutation", "gene", "blood", "bone", "kidney", "prostate", "metastasis", "staging",
-        "bcc", "aml", "all", "rcc", "pet", "ct", "mri", "uvb", "uva",
+        "bcc", "aml", "all", "rcc", "pet", "ct", "mri", "uvb", "uva", "hodgkin", "marrow",
     )
+    med_phrase_pat = re.compile(r"\b(?:[A-Z]{2,6}|[a-z]+(?:\s+[a-z]+){1,2})\b")
+    proper_noun_pat = re.compile(r"\b[A-Z][a-z]{2,}(?:\s+(?:of|the|de|da)?\s*[A-Z][a-z]{2,}){0,2}\b")
+
     term_counts: Counter[str] = Counter()
     chunk_terms: dict[str, list[str]] = {}
+
     for ch in chunks:
         found_in_ch: list[str] = []
-        for m in phrase_pattern.finditer(ch.text):
-            raw = m.group(0).strip()
-            rl = raw.lower()
-            if len(rl) < 3 or rl in STOPWORDS:
-                continue
-            if any(anc in rl for anc in domain_anchors):
-                words = [w for w in rl.split() if w not in STOPWORDS]
-                if not words:
+        if domain == "medical":
+            for m in med_phrase_pat.finditer(ch.text):
+                rl = m.group(0).strip().lower()
+                if len(rl) < 3 or rl in STOPWORDS:
                     continue
-                norm = " ".join(words)
-                if len(norm) >= 3:
-                    term_counts[norm] += 1
-                    found_in_ch.append(norm)
-        # Keep top unique domain phrases per chunk
+                if any(anc in rl for anc in medical_anchors):
+                    words = [w for w in rl.split() if w not in STOPWORDS]
+                    if not words:
+                        continue
+                    norm = " ".join(words)
+                    if len(norm) >= 3:
+                        term_counts[norm] += 1
+                        found_in_ch.append(norm)
+        else:
+            # Novel / general prose: extract recurring capitalized entities (characters, places, events)
+            for m in proper_noun_pat.finditer(ch.text):
+                raw = re.sub(r"\s+", " ", m.group(0).strip())
+                rl = raw.lower()
+                if len(rl) < 3 or rl in STOPWORDS or rl in {
+                    "the", "and", "but", "for", "with", "from", "that", "this", "what", "when",
+                    "where", "which", "chapter", "book", "part", "graphrag", "section",
+                }:
+                    continue
+                term_counts[rl] += 1
+                found_in_ch.append(rl)
+
         chunk_terms[ch.chunk_id] = list(dict.fromkeys(found_in_ch))[:12]
 
-    # Filter to recurring terms (freq >= 2) to avoid noise
-    kept_terms = {t for t, c in term_counts.most_common(220) if c >= 2}
+    max_vocab = 450 if len(chunks) > 300 else 240
+    kept_terms = {t for t, c in term_counts.most_common(max_vocab) if c >= 2}
     entities_by_id: dict[str, Entity] = {}
     relations_by_id: dict[str, Relation] = {}
 
@@ -169,30 +187,32 @@ def _extract_lexical_medical_kg(
             eid = make_entity_id(term)
             eids.append(eid)
             if eid not in entities_by_id:
-                etype = (
-                    "Treatment"
-                    if any(k in term for k in ("surgery", "therapy", "treatment", "mohs", "chemo"))
-                    else (
-                        "DiagnosticTest"
-                        if any(k in term for k in ("biopsy", "exam", "imaging", "scan", "ct", "mri"))
+                if domain == "medical":
+                    etype = (
+                        "Treatment"
+                        if any(k in term for k in ("surgery", "therapy", "treatment", "mohs", "chemo"))
                         else (
-                            "RiskFactor"
-                            if any(k in term for k in ("risk", "uv", "sun", "transplant", "immune"))
-                            else "DiseaseConcept"
+                            "DiagnosticTest"
+                            if any(k in term for k in ("biopsy", "exam", "imaging", "scan", "ct", "mri"))
+                            else (
+                                "RiskFactor"
+                                if any(k in term for k in ("risk", "uv", "sun", "transplant", "immune"))
+                                else "DiseaseConcept"
+                            )
                         )
                     )
-                )
+                else:
+                    etype = "NarrativeEntity"
                 entities_by_id[eid] = Entity(
                     entity_id=eid,
                     name=term,
                     entity_type=etype,
-                    description=f"Corpus medical term `{term}` extracted from GraphRAG-Bench.",
+                    description=f"Corpus entity `{term}` extracted from GraphRAG-Bench ({domain}).",
                     source_chunk_ids=[ch.chunk_id],
                 )
             elif ch.chunk_id not in entities_by_id[eid].source_chunk_ids:
                 entities_by_id[eid].source_chunk_ids.append(ch.chunk_id)
 
-        # Connect co-occurring concepts within the same chunk (star + adjacent pairs)
         for i in range(len(eids)):
             for j in range(i + 1, min(len(eids), i + 4)):
                 s_id, t_id = sorted((eids[i], eids[j]))
@@ -205,7 +225,7 @@ def _extract_lexical_medical_kg(
                         source_id=s_id,
                         target_id=t_id,
                         relation_type="CO_OCCURS_WITH",
-                        description=f"Co-occurs in medical guideline chunk {ch.chunk_id}.",
+                        description=f"Co-occurs in chunk {ch.chunk_id}.",
                         weight=1.0,
                         source_chunk_ids=[ch.chunk_id],
                     )
@@ -223,7 +243,8 @@ def ingest_graphrag_bench_corpus(
     *,
     docs_dir: Path | None = None,
     storage_dir: Path | None = None,
-    max_chars: int = 120_000,
+    max_chars: int = 0,
+    source_filter: str | None = None,
     fast_lexical: bool = True,
     llm: BaseLLMClient | None = None,
     embedder: BaseEmbeddingClient | None = None,
@@ -238,15 +259,15 @@ def ingest_graphrag_bench_corpus(
     out_docs.mkdir(parents=True, exist_ok=True)
     out_storage.mkdir(parents=True, exist_ok=True)
 
-    # Clear previous generated md files in out_docs
     for old_md in out_docs.glob("grb_*.md"):
         old_md.unlink()
+
+    domain = "medical" if "medical" in corpus_path.name.lower() else "novel"
 
     if isinstance(raw, dict) and "context" in raw:
         full_text = str(raw["context"])
         if max_chars > 0:
             full_text = full_text[:max_chars]
-        # Partition into clean ~20K char guideline sections
         step = 20_000
         for idx, start in enumerate(range(0, len(full_text), step)):
             seg = full_text[start : start + step]
@@ -254,17 +275,24 @@ def ingest_graphrag_bench_corpus(
                 f"# GraphRAG-Bench Medical Section {idx}\n\n{seg}\n", encoding="utf-8"
             )
     elif isinstance(raw, list):
+        wanted_sources = (
+            {s.strip() for s in source_filter.split(",") if s.strip()} if source_filter else None
+        )
         budget = max_chars if max_chars > 0 else 10**9
         used = 0
         for idx, item in enumerate(raw):
+            cname = str(item.get("corpus_name", f"doc_{idx}"))
+            if wanted_sources is not None and cname not in wanted_sources:
+                continue
             txt = str(item.get("context", item.get("text", "")))
             if not txt:
                 continue
             take = txt[: max(0, budget - used)]
             if not take:
                 break
-            (out_docs / f"grb_doc_{idx:03d}.md").write_text(
-                f"# GraphRAG-Bench Document {idx}\n\n{take}\n", encoding="utf-8"
+            slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", cname)
+            (out_docs / f"grb_{slug}_{idx:03d}.md").write_text(
+                f"# GraphRAG-Bench {cname}\n\n{take}\n", encoding="utf-8"
             )
             used += len(take)
             if used >= budget:
@@ -274,7 +302,6 @@ def ingest_graphrag_bench_corpus(
         pipeline = GraphRAGPipeline(config, llm=llm, embedder=embedder)
         return pipeline.build(out_docs, storage_dir=out_storage)
 
-    # Fast deterministic lexical KG build + real vector store + Louvain communities
     ingestor = DocumentIngestor(
         chunk_size=config.chunking.chunk_size,
         chunk_overlap=config.chunking.chunk_overlap,
@@ -289,7 +316,7 @@ def ingest_graphrag_bench_corpus(
         vecs = active_embedder.embed([c.text for c in chunks])
         vs.add_chunks(chunks, vecs)
 
-    entities, relations = _extract_lexical_medical_kg(chunks)
+    entities, relations = _extract_lexical_kg(chunks, domain=domain)
     for e in entities:
         gs.upsert_entity(e)
     for r in relations:
@@ -323,19 +350,23 @@ def evaluate_graphrag_bench(
     *,
     storage_dir: Path | None = None,
     output_dir: Path | None = None,
+    output_tag: str = "default",
     question_type: str = "Complex Reasoning",
+    source_filter: str | None = None,
     limit: int = 10,
     modes: list[str] | None = None,
+    resume: bool = True,
+    progress_every: int = 5,
     llm: BaseLLMClient | None = None,
     embedder: BaseEmbeddingClient | None = None,
 ) -> tuple[GRBEvalReport, Path]:
-    """Compare Naive RAG vs Hybrid Direct vs PPR+CoT vs PPR+ToT on GraphRAG-Bench."""
+    """Compare Naive RAG vs Hybrid Direct vs PPR+CoT vs PPR+ToT on GraphRAG-Bench with checkpoints."""
     if not questions_path.is_file():
         raise FileNotFoundError(f"GraphRAG-Bench questions file not found: {questions_path}")
 
     selected_modes = modes or ["naive_rag", "hybrid_direct", "ppr_cot", "ppr_tot"]
     src_storage = storage_dir or config.storage_path
-    out_dir = output_dir or config.output_path
+    out_dir = (output_dir or config.output_path) / output_tag
     out_dir.mkdir(parents=True, exist_ok=True)
 
     active_llm = llm or create_llm_client(config)
@@ -344,89 +375,120 @@ def evaluate_graphrag_bench(
     pipeline.load(src_storage)
 
     all_qs: list[dict[str, Any]] = json.loads(questions_path.read_text(encoding="utf-8"))
+    filtered = all_qs
     if question_type.strip().upper() != "ALL":
-        filtered = [q for q in all_qs if q.get("question_type") == question_type]
-    else:
-        filtered = all_qs
+        wanted_types = {t.strip() for t in question_type.split(",") if t.strip()}
+        filtered = [q for q in filtered if q.get("question_type") in wanted_types]
+    if source_filter:
+        wanted_src = {s.strip() for s in source_filter.split(",") if s.strip()}
+        filtered = [q for q in filtered if q.get("source") in wanted_src]
+
     sampled = filtered[:limit] if limit > 0 else filtered
 
     summaries: list[GRBModeSummary] = []
     all_outcomes: dict[str, list[GRBQuestionOutcome]] = {}
 
     for mode in selected_modes:
+        ckpt_path = out_dir / f"grb_{mode}.checkpoint.jsonl"
+        cached: dict[str, GRBQuestionOutcome] = {}
+        if resume and ckpt_path.is_file():
+            with ckpt_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.strip():
+                        item = GRBQuestionOutcome(**json.loads(line))
+                        cached[item.question_id] = item
+
         outcomes: list[GRBQuestionOutcome] = []
-        for q in sampled:
-            qid = str(q.get("id", ""))
-            qtext = str(q["question"])
-            gold_ans = str(q.get("answer", ""))
-            gold_ev = str(q.get("evidence", ""))
-            t0 = time.perf_counter()
+        mode_t0 = time.perf_counter()
+        newly_run = 0
+        total_n = len(sampled)
 
-            g_score: float | None = None
-            tot_branches = 0
-            tot_pruned = 0
-            llm_calls = 1
+        with ckpt_path.open("a", encoding="utf-8") as ckpt_fh:
+            for idx_q, q in enumerate(sampled, start=1):
+                qid = str(q.get("id", f"q_{idx_q}"))
+                if qid in cached:
+                    outcomes.append(cached[qid])
+                    continue
 
-            if mode == "naive_rag":
-                q_vec = active_embedder.embed([qtext])[0]
-                hits = pipeline.vector_store.search(q_vec, top_k=config.retrieval.top_k_chunks)
-                ctx = "\n".join(f"- [{c.chunk_id}] {c.text}" for c, _ in hits)
-                prompt = (
-                    f"Retrieved Text Chunks:\n{ctx}\n\n"
-                    f"Question: {qtext}\n\n"
-                    "Answer concisely and accurately based ONLY on the retrieved chunks."
-                )
-                pred = active_llm.complete(prompt, temperature=0.1, json_mode=False)
-            elif mode == "hybrid_direct":
-                res = pipeline.query(
-                    qtext, mode="hybrid", reasoning="direct", auto_load=False, enable_compact=True
-                )
-                pred = res.answer
-                ledger = res.metadata.get("harness_ledger", {})
-                if isinstance(ledger, dict):
-                    llm_calls = int(ledger.get("total_calls", 1))
-            elif mode == "ppr_cot":
-                res = pipeline.query(
-                    qtext, mode="ppr", reasoning="cot", auto_load=False, enable_compact=True
-                )
-                pred = res.answer
-                rm = res.metadata.get("reasoning", {})
-                if isinstance(rm, dict):
-                    ga = rm.get("grounding_audit", {})
-                    if isinstance(ga, dict):
-                        g_score = float(ga.get("grounding_score", 0.0))
-                ledger = res.metadata.get("harness_ledger", {})
-                if isinstance(ledger, dict):
-                    llm_calls = int(ledger.get("total_calls", 1))
-            elif mode == "ppr_tot":
-                res = pipeline.query(
-                    qtext, mode="ppr", reasoning="tot", auto_load=False, enable_compact=True
-                )
-                pred = res.answer
-                rm = res.metadata.get("reasoning", {})
-                if isinstance(rm, dict):
-                    ga = rm.get("grounding_audit", {})
-                    if isinstance(ga, dict):
-                        g_score = float(ga.get("grounding_score", 0.0))
-                    branches = rm.get("branches", [])
-                    if isinstance(branches, list):
-                        tot_branches = len(branches)
-                        tot_pruned = sum(1 for b in branches if b.get("status") == "pruned")
-                ledger = res.metadata.get("harness_ledger", {})
-                if isinstance(ledger, dict):
-                    llm_calls = int(ledger.get("total_calls", 1))
-            else:
-                raise ValueError(f"Unsupported GraphRAG-Bench eval mode: {mode!r}")
+                qtext = str(q["question"])
+                gold_ans = str(q.get("answer", ""))
+                gold_ev = str(q.get("evidence", ""))
+                t0 = time.perf_counter()
 
-            dt = round(time.perf_counter() - t0, 3)
-            outcomes.append(
-                GRBQuestionOutcome(
+                g_score: float | None = None
+                tot_branches = 0
+                tot_pruned = 0
+                llm_calls = 1
+                retrieved_text = ""
+
+                if mode == "naive_rag":
+                    q_vec = active_embedder.embed([qtext])[0]
+                    hits = pipeline.vector_store.search(q_vec, top_k=config.retrieval.top_k_chunks)
+                    ctx = "\n".join(f"- [{c.chunk_id}] {c.text}" for c, _ in hits)
+                    retrieved_text = " ".join(c.text for c, _ in hits)
+                    prompt = (
+                        f"Retrieved Text Chunks:\n{ctx}\n\n"
+                        f"Question: {qtext}\n\n"
+                        "Answer concisely and accurately in the same language as the question "
+                        "based ONLY on the retrieved chunks."
+                    )
+                    pred = active_llm.complete(prompt, temperature=0.1, json_mode=False)
+                elif mode == "hybrid_direct":
+                    res = pipeline.query(
+                        qtext, mode="hybrid", reasoning="direct", auto_load=False, enable_compact=True
+                    )
+                    pred = res.answer
+                    retrieved_text = " ".join(ev.text for ev in res.evidences)
+                    ledger = res.metadata.get("harness_ledger", {})
+                    if isinstance(ledger, dict):
+                        llm_calls = int(ledger.get("total_calls", 1))
+                elif mode == "ppr_cot":
+                    res = pipeline.query(
+                        qtext, mode="ppr", reasoning="cot", auto_load=False, enable_compact=True
+                    )
+                    pred = res.answer
+                    retrieved_text = " ".join(ev.text for ev in res.evidences)
+                    rm = res.metadata.get("reasoning", {})
+                    if isinstance(rm, dict):
+                        ga = rm.get("grounding_audit", {})
+                        if isinstance(ga, dict):
+                            g_score = float(ga.get("grounding_score", 0.0))
+                    ledger = res.metadata.get("harness_ledger", {})
+                    if isinstance(ledger, dict):
+                        llm_calls = int(ledger.get("total_calls", 1))
+                elif mode == "ppr_tot":
+                    res = pipeline.query(
+                        qtext, mode="ppr", reasoning="tot", auto_load=False, enable_compact=True
+                    )
+                    pred = res.answer
+                    retrieved_text = " ".join(ev.text for ev in res.evidences)
+                    rm = res.metadata.get("reasoning", {})
+                    if isinstance(rm, dict):
+                        ga = rm.get("grounding_audit", {})
+                        if isinstance(ga, dict):
+                            g_score = float(ga.get("grounding_score", 0.0))
+                        branches = rm.get("branches", [])
+                        if isinstance(branches, list):
+                            tot_branches = len(branches)
+                            tot_pruned = sum(1 for b in branches if b.get("status") == "pruned")
+                    ledger = res.metadata.get("harness_ledger", {})
+                    if isinstance(ledger, dict):
+                        llm_calls = int(ledger.get("total_calls", 1))
+                else:
+                    raise ValueError(f"Unsupported GraphRAG-Bench eval mode: {mode!r}")
+
+                dt = round(time.perf_counter() - t0, 3)
+                outcome = GRBQuestionOutcome(
                     question_id=qid,
+                    source=str(q.get("source", "")),
                     question_type=str(q.get("question_type", "")),
                     mode=mode,
                     token_f1=compute_token_f1(pred, gold_ans),
                     rouge_l=compute_rouge_l_f1(pred, gold_ans),
                     evidence_coverage=compute_evidence_coverage(pred, gold_ev or gold_ans),
+                    retrieval_evidence_recall=compute_evidence_coverage(
+                        retrieved_text, gold_ev or gold_ans
+                    ),
                     grounding_score=g_score,
                     tot_branches=tot_branches,
                     tot_pruned=tot_pruned,
@@ -434,7 +496,22 @@ def evaluate_graphrag_bench(
                     latency_seconds=dt,
                     prediction=pred[:500],
                 )
-            )
+                outcomes.append(outcome)
+                ckpt_fh.write(outcome.model_dump_json() + "\n")
+                ckpt_fh.flush()
+                newly_run += 1
+
+                if progress_every > 0 and (len(outcomes) % progress_every == 0 or len(outcomes) == total_n):
+                    elapsed = max(time.perf_counter() - mode_t0, 1e-6)
+                    avg_s = elapsed / max(newly_run, 1)
+                    eta_m = ((total_n - len(outcomes)) * avg_s) / 60.0
+                    cur_f1 = sum(o.token_f1 for o in outcomes) / len(outcomes) * 100.0
+                    cur_ev = sum(o.evidence_coverage for o in outcomes) / len(outcomes) * 100.0
+                    print(
+                        f"[GRB {output_tag} | {mode}] {len(outcomes)}/{total_n} | "
+                        f"F1={cur_f1:.1f}% | EvCov={cur_ev:.1f}% | avg={avg_s:.1f}s | ETA={eta_m:.1f}m",
+                        flush=True,
+                    )
 
         all_outcomes[mode] = outcomes
         n = max(len(outcomes), 1)
@@ -446,6 +523,9 @@ def evaluate_graphrag_bench(
                 avg_token_f1=round(sum(o.token_f1 for o in outcomes) / n, 4),
                 avg_rouge_l=round(sum(o.rouge_l for o in outcomes) / n, 4),
                 avg_evidence_coverage=round(sum(o.evidence_coverage for o in outcomes) / n, 4),
+                avg_retrieval_evidence_recall=round(
+                    sum(o.retrieval_evidence_recall for o in outcomes) / n, 4
+                ),
                 avg_grounding_score=round(sum(g_vals) / len(g_vals), 4) if g_vals else None,
                 avg_llm_calls=round(sum(o.llm_calls for o in outcomes) / n, 2),
                 avg_latency_seconds=round(sum(o.latency_seconds for o in outcomes) / n, 2),
@@ -454,6 +534,7 @@ def evaluate_graphrag_bench(
 
     report = GRBEvalReport(
         question_type_filter=question_type,
+        source_filter=source_filter or "ALL",
         total_questions=len(sampled),
         llm_model=config.env.llm_model,
         modes=summaries,
@@ -471,19 +552,19 @@ def evaluate_graphrag_bench(
     )
 
     md_lines = [
-        f"# GraphRAG-Bench 多范式评测报告（`{question_type}`）",
+        f"# GraphRAG-Bench 多范式评测报告（`{question_type}` | tag=`{output_tag}`）",
         "",
-        f"- **题数**：`{len(sampled)}` | **模型**：`{config.env.llm_model}`",
+        f"- **题数**：`{len(sampled)}` | **语料过滤**：`{source_filter or 'ALL'}` | **模型**：`{config.env.llm_model}`",
         "",
-        "| 范式模式 | Token-F1 | ROUGE-L | 证据覆盖率 | Grounding Score | 平均调用 | 平均耗时 |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| 范式模式 | Token-F1 | ROUGE-L | 回答证据覆盖 | 检索证据召回 | Grounding | 平均调用 | 平均耗时 |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for s in summaries:
         g_str = f"{s.avg_grounding_score * 100:.1f}%" if s.avg_grounding_score is not None else "-"
         md_lines.append(
             f"| `{s.mode}` | **{s.avg_token_f1 * 100:.1f}%** | {s.avg_rouge_l * 100:.1f}% | "
-            f"{s.avg_evidence_coverage * 100:.1f}% | {g_str} | {s.avg_llm_calls:.1f} | "
-            f"{s.avg_latency_seconds:.2f}s |"
+            f"{s.avg_evidence_coverage * 100:.1f}% | {s.avg_retrieval_evidence_recall * 100:.1f}% | "
+            f"{g_str} | {s.avg_llm_calls:.1f} | {s.avg_latency_seconds:.2f}s |"
         )
     report_md = out_dir / "grb_eval_report.md"
     report_md.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
