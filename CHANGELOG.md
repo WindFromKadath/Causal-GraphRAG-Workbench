@@ -6,6 +6,20 @@
 
 ---
 
+## [2026-11-23] Stage 3.0 Base Model - 确立第三阶段本地基础模型基线（`qwen3.5:9b` + `num_gpu` 控制）、多上下文显存压测与全套任务基准跨模型回归归档
+- **提交类型**：`feat`
+- **变更背景**：在进入 Stage 3.1–3.4 开发前，针对本机 8 GB 显存环境完成 `gemma4:12b`、`qwen3.5:9b`、`qwen3.5:4b` 三款本地模型的 4k→128k 多上下文吞吐与物理显存基准压测，定位 Ollama 默认调度保守卸载瓶颈与 WDDM 换页边界，将实测最优配置固化为第三阶段底层基础模型，并完成全套 4 阶段端到端任务基准重跑对比。
+- **主要修改**：
+  - 升级 `src/llm_graphrag_kg/config.py`、`providers/llm/ollama_native.py`、`providers/factory.py` 与 `cli.py`：默认基础模型升级为 `qwen3.5:9b`（默认超时 `180s`），新增 `GRAPHRAG_LLM_NUM_GPU`（`EnvSettings.llm_num_gpu`）透传至 Ollama `/api/chat` `options.num_gpu`，并在 `last_telemetry` 补充 `load_seconds` 与 `prefill_tok_per_s` 遥测；`stress-fsiq` 默认 `--num-ctx` 从 `32768` 对齐至 `16384`。
+  - 更新 `.env.example`、`docs/engineering_deployment.md`、`docs/stage3_nextgen_graphrag_plan.md` 与 `README.md`，新增脱敏选型与跨模型回归报告 `docs/benchmark_stage3_base_model.md`（确立 `qwen3.5:9b` + `num_gpu=99` 为主力基础模型、`qwen3.5:4b` 为高吞吐辅助模型，明确 8 GB 显存下 `gemma4:12b` 禁用 `num_gpu=99` 与 Embedding 共存约束，并归档全套端到端任务跨模型对照结果）。
+  - 更新 `.gitignore` 与 `scripts/privacy_check.py`：新增 `local_bench/` 本地硬件压测隔离目录及隐私门禁校验；新增 `tests/test_ollama_native.py` 单元测试覆盖 `num_gpu` 透传、工厂路由与隐私门禁。
+- **验证方式**：
+  - 通过 `ruff check`（0 告警）、`pytest -v`（27/27 全部通过）、`llm-graphrag-kg check-llm` 实测联通 `qwen3.5:9b`（`think=False, num_ctx=16384, num_gpu=99`）以及 `scripts/privacy_check.py --staged --require-changelog` 扫描。
+  - 完成 4 阶段端到端跨模型回归（`seed=42`，总耗时 `48.9 min`）：`GraphRAG-Bench` 双域 Plan B 下 `ppr_cot` 全面反超 `naive_rag` 登顶第一（Medical Token-F1 `30.0%` / ROUGE-L `24.0%` / Grounding `100.0%`，Novel Token-F1 `25.5%` / ROUGE-L `20.7%` / Grounding `97.0%`），`ppr_tot` 提速 **3.19×–3.47×** 降至 `15.1s–16.3s`；`FailureSensorIQ` 4 套件 × 100 题实现 `L1/L3/L4` 100.0% 满分（`0.41s–0.49s`/题、0 修复/0 空回复）与 `L2` 82.0%（精准定位 15/18 错题集中于 `irrelevant_sensors_for_failure_mode`）；工业实时 `PPR + ToT` 诊断 `GroundingAudit = 100.0%`（Compact `-83.8%`）。
+- **隐私与迁移自检**：本地压测脚本、原始 JSONL 与基准评测产物严格隔离在 `.gitignore` 屏蔽的 `local_bench/`、`outputs/` 与 `storage/`；无密钥、本机绝对路径或私有数据入库。
+
+---
+
 ## [2026-11-23] Stage 3 Plan - 归档第三阶段演进方案（稠密混合检索、自适应路由、LLM-Judge、HyperGraph与自演化记忆）
 - **提交类型**：`docs`
 - **变更背景**：基于第二阶段 `GraphRAG-Bench` 双域（Medical + Novel）实测定位的 4 大瓶颈（`local_hash` 召回上限、无类型共现边噪声、ToT 单胜剪枝伤及多面摘要、`Token-F1` 拒答失真）及 2025–2026 前沿范式调研，正式确立并归档第三阶段（Stage 3.1 ~ 3.4）工程实施计划。

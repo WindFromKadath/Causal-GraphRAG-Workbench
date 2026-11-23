@@ -48,7 +48,19 @@ flowchart TD
 
 ---
 
-## 3. 分步实施里程碑（Stage 3.1 ~ 3.4）
+## 3. 分步实施里程碑（Stage 3.0 ~ 3.4）
+
+### Stage 3.0（已完成）：底层基础模型选型与本地推理底座定型
+- **目标**：在接入稠密检索、自适应路由与 LLM-as-a-Judge 之前，通过多上下文窗口（4k → 128k）吞吐与显存实测，锁死 8 GB 消费级显存下的最优本地基础模型与参数配置，避免上层架构被底层推理瓶颈（CPU 提前卸载、WDDM 换页、冷加载抖动）拖累。
+- **实测依据**：详见 [benchmark_stage3_base_model.md](benchmark_stage3_base_model.md)（RTX 5060 8 GB / Ollama 0.40.17 / `think=false` 全量 40+ 轮基准压测）。
+- **核心落地与路由基线**：
+  1. **主力基础模型切换为 `qwen3.5:9b` + `GRAPHRAG_LLM_NUM_GPU=99`**：
+     - 克服 Ollama 默认保守显存估算导致的 ≥8k 提前 CPU 卸载，在 16k RAG 下实现 Prefill **2,343 t/s**、Decode **51.3 t/s**（峰值显存 **6,746 MiB**，较默认提速 **1.36×**），32k 下达 **48.7 t/s**（**2.55×**，峰值 **7,274 MiB**），8k–16k 端到端速度较 Stage 2 `gemma4:12b` 快 **2.2–2.4×**；
+     - 得益于混合注意力架构，KV Cache 仅约 **33 MiB / 1k tokens**，8 GB 显卡安全上限达 `32k`。
+  2. **高吞吐辅助模型定为 `qwen3.5:4b`**：
+     - 4k–64k 默认全 GPU 稳定 **60–89 t/s**（显存 3.8–5.7 GiB），作为 Stage 3.1/3.2/3.3 中离线大批量语义 OpenIE 抽图、轻量任务路由与多跳探索的高性价比候选。
+  3. **框架能力补齐**：`EnvSettings`、`OllamaNativeLLMClient` 与 `create_llm_client` 新增 `GRAPHRAG_LLM_NUM_GPU` 显式透传与 `prefill_tok_per_s` / `load_seconds` 遥测，并将 `.env.example` 默认基础模型升级为 `qwen3.5:9b`（`num_ctx=16384`、`think=false`、`num_gpu=99`）；同时明确 `gemma4:12b` 在 8 GB 显卡上**严禁**配置 `num_gpu=99`（避免 WDDM PCIe 换页雪崩）。
+  4. **Stage 3.1 Embedding 共存约定**：线上 `qwen3.5:9b`（16k ~6.75 GiB）可直接与 `nomic-embed-text`（~0.4 GiB）同驻 8 GB 显存；若接入 `bge-m3`（~1.2 GiB），采用“离线索引与在线问答分时”或 CPU 嵌入 / `OLLAMA_KV_CACHE_TYPE=q8_0` 策略，防止模型反复换出冷加载。
 
 ### Stage 3.1：真实稠密嵌入 + BM25 RRF 混合检索 + HippoRAG 2 增强
 - **目标**：彻底打穿 `local_hash` 在千级切片语料上的召回瓶颈。

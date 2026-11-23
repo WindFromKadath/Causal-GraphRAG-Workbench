@@ -575,8 +575,8 @@ def stress_fsiq(
         typer.Option("--think/--no-think", help="Control Ollama thinking mode during stress test."),
     ] = False,
     num_ctx: Annotated[
-        int | None, typer.Option("--num-ctx", help="Override Ollama context length (e.g., 32768).")
-    ] = 32768,
+        int | None, typer.Option("--num-ctx", help="Override Ollama context length (e.g., 16384).")
+    ] = 16384,
     concise_json: Annotated[
         bool,
         typer.Option("--concise-json/--verbose-text", help="Enforce compact JSON answer output."),

@@ -62,24 +62,32 @@ cp .env.example .env
 
 ### 3.1 本机 / 局域网 Ollama 部署（推荐起步）
 
-1. **拉取聊天模型与中文增强向量模型**：
+> 基于 [Stage 3.0 本地模型基准报告](benchmark_stage3_base_model.md)（8 GB 显存实测），推荐以 **`qwen3.5:9b`（主力推理）** 与 **`qwen3.5:4b`（高速离线建图/路由）** 作为默认本地底座。
+
+1. **拉取聊天模型与语义向量模型**：
    ```bash
-   ollama pull gemma4:12b
-   ollama pull bge-m3        # 推荐中英文工业术语语义检索
+   ollama pull qwen3.5:9b        # 主力 GraphRAG / 推理模型（8 GB 显存推荐）
+   ollama pull qwen3.5:4b        # 可选：高吞吐离线建图 / 轻量路由模型（60-89 tok/s）
+   ollama pull nomic-embed-text  # 轻量嵌入（~0.4 GiB，可与 qwen3.5:9b 同驻 8 GB 显存）
+   # ollama pull bge-m3          # 中文增强嵌入（~1.2 GiB，建议离线索引阶段单独运行或 12 GB+ 显存同驻）
    ```
-2. **在 `.env` 中配置对接参数**：
+2. **在 `.env` 中配置对接参数（8 GB 显存推荐配置）**：
    ```ini
-   GRAPHRAG_LLM_PROVIDER=openai_compat
-   GRAPHRAG_LLM_BASE_URL=http://127.0.0.1:11434/v1
+   GRAPHRAG_LLM_PROVIDER=ollama_native
+   GRAPHRAG_LLM_BASE_URL=http://127.0.0.1:11434
    GRAPHRAG_LLM_API_KEY=local-no-key
-   GRAPHRAG_LLM_MODEL=gemma4:12b
+   GRAPHRAG_LLM_MODEL=qwen3.5:9b
    GRAPHRAG_LLM_TIMEOUT=180
+   GRAPHRAG_LLM_THINK=false
+   GRAPHRAG_LLM_NUM_CTX=16384    # 离线批量抽图可调至 4096-8192；8 GB 显存安全上限 32768
+   GRAPHRAG_LLM_NUM_GPU=99       # 强制全 GPU（qwen3.5:9b 16k-32k 提速 1.36x-2.55x）
 
    GRAPHRAG_EMBEDDING_PROVIDER=openai_compat
    GRAPHRAG_EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
    GRAPHRAG_EMBEDDING_API_KEY=local-no-key
-   GRAPHRAG_EMBEDDING_MODEL=bge-m3
+   GRAPHRAG_EMBEDDING_MODEL=nomic-embed-text
    ```
+   > **8 GB 显存避坑提示**：若使用权重本身已逼近或超过物理显存的大参数模型（例如 `gemma4:12b` 权重 8.0 GB，流畅全 GPU 需 ≥12 GB 显存），**切勿设置 `GRAPHRAG_LLM_NUM_GPU=99`**，请留空交由 Ollama 自动分配，否则会触发 Windows WDDM PCIe 换页导致吞吐骤降 70%–80%。
 3. **局域网跨机访问**：若 Ollama 部署在独立 GPU 主机上，需在 GPU 主机设置环境变量 `OLLAMA_HOST=0.0.0.0:11434` 并配置防火墙白名单，切勿直接暴露至公网。
 
 ### 3.2 高并发生产服务（vLLM OpenAI 兼容端点）

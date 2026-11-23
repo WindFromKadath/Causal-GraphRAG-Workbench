@@ -29,19 +29,23 @@ def create_llm_client(config: AppConfig) -> BaseLLMClient:
             timeout=config.env.llm_timeout,
             think=config.env.llm_think,
             num_ctx=config.env.llm_num_ctx,
+            num_gpu=config.env.llm_num_gpu,
             max_tokens=config.env.llm_max_tokens,
         )
     if provider == "openai_compat":
-        # If targeting local Ollama with explicit think/num_ctx overrides, use native /api/chat.
-        if (config.env.llm_think is not None or config.env.llm_num_ctx is not None) and (
-            ":11434" in config.env.llm_base_url
-        ):
+        # If targeting local Ollama with explicit native overrides, use `/api/chat`.
+        if (
+            config.env.llm_think is not None
+            or config.env.llm_num_ctx is not None
+            or config.env.llm_num_gpu is not None
+        ) and (":11434" in config.env.llm_base_url):
             return OllamaNativeLLMClient(
                 base_url=config.env.llm_base_url,
                 model=config.env.llm_model,
                 timeout=config.env.llm_timeout,
                 think=config.env.llm_think,
                 num_ctx=config.env.llm_num_ctx,
+                num_gpu=config.env.llm_num_gpu,
                 max_tokens=config.env.llm_max_tokens,
             )
         return OpenAICompatLLMClient(

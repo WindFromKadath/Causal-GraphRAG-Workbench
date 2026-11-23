@@ -21,6 +21,7 @@ FORBIDDEN_PREFIXES = (
     ".vscode/",
     "data/private/",
     "data/raw/",
+    "local_bench/",
     "storage/",
     "outputs/",
 )

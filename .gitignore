@@ -42,3 +42,6 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+
+# Local-only experiments & hardware benchmarks (NEVER commit)
+local_bench/

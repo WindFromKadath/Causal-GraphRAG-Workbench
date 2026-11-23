@@ -32,6 +32,7 @@ LLM-GraphRAG-KG/
 │   ├── stage2_harness_reasoning_plan.md        # 第二阶段规划：LLM Harness + Compact + 显性 CoT/ToT
 │   ├── benchmark_stage2_1_audit_and_roadmap.md # Stage 2.1 全量四基线评测、差异法证与前沿对标
 │   ├── benchmark_stage2_hard_datasets.md       # 第二阶段收尾：GraphRAG-Bench 双域高难评测与边界总结
+│   ├── benchmark_stage3_base_model.md          # Stage 3.0 基础模型基准：本地 Ollama 多上下文吞吐与显存选型
 │   └── stage3_nextgen_graphrag_plan.md         # 第三阶段规划：稠密混合检索、自适应路由、HyperGraph与写回记忆
 ├── scripts/                     # 隐私与提交规范检查工具
 ├── src/llm_graphrag_kg/         # 核心框架源码

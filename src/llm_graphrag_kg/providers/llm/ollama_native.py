@@ -1,4 +1,4 @@
-"""Native Ollama `/api/chat` LLM adapter supporting explicit `think`, `num_ctx`, and telemetry."""
+"""Native Ollama `/api/chat` LLM adapter supporting explicit `think`, `num_ctx`, `num_gpu`, and telemetry."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 
 
 class OllamaNativeLLMClient:
-    """Direct Ollama client via `/api/chat` for exact control over `think` and `num_ctx`."""
+    """Direct Ollama client via `/api/chat` for exact control over `think`, `num_ctx`, and `num_gpu`."""
 
     def __init__(
         self,
@@ -19,6 +19,7 @@ class OllamaNativeLLMClient:
         timeout: int = 180,
         think: bool | None = None,
         num_ctx: int | None = None,
+        num_gpu: int | None = None,
         max_tokens: int | None = None,
     ) -> None:
         cleaned = base_url.rstrip("/")
@@ -29,6 +30,7 @@ class OllamaNativeLLMClient:
         self.timeout = timeout
         self.think = think
         self.num_ctx = num_ctx
+        self.num_gpu = num_gpu
         self.max_tokens = max_tokens
         self.last_telemetry: dict[str, Any] = {}
 
@@ -50,6 +52,8 @@ class OllamaNativeLLMClient:
         options: dict[str, Any] = {"temperature": temperature}
         if self.num_ctx is not None:
             options["num_ctx"] = self.num_ctx
+        if self.num_gpu is not None:
+            options["num_gpu"] = self.num_gpu
         effective_max = max_tokens if max_tokens is not None else self.max_tokens
         if effective_max is not None:
             options["num_predict"] = effective_max
@@ -76,11 +80,15 @@ class OllamaNativeLLMClient:
             res = json.loads(resp.read().decode("utf-8"))
         wall = time.perf_counter() - t0
 
+        prompt_count = int(res.get("prompt_eval_count", 0))
+        prompt_sec = max(res.get("prompt_eval_duration", 0) / 1e9, 1e-6)
         eval_count = int(res.get("eval_count", 0))
         eval_sec = max(res.get("eval_duration", 0) / 1e9, 1e-6)
         self.last_telemetry = {
             "wall_seconds": round(wall, 3),
-            "prompt_tokens": int(res.get("prompt_eval_count", 0)),
+            "load_seconds": round(res.get("load_duration", 0) / 1e9, 3),
+            "prompt_tokens": prompt_count,
+            "prefill_tok_per_s": round(prompt_count / prompt_sec, 1) if prompt_count else 0.0,
             "eval_tokens": eval_count,
             "eval_tok_per_s": round(eval_count / eval_sec, 1) if eval_count else 0.0,
             "done_reason": res.get("done_reason", ""),
@@ -102,7 +110,7 @@ class OllamaNativeLLMClient:
                 return (
                     True,
                     f"Connected to Ollama native {self.base_url}; model `{self.model}` ready "
-                    f"(think={self.think}, num_ctx={self.num_ctx}).",
+                    f"(think={self.think}, num_ctx={self.num_ctx}, num_gpu={self.num_gpu}).",
                 )
             return (
                 True,
