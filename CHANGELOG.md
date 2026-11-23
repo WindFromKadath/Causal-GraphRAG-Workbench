@@ -6,6 +6,17 @@
 
 ---
 
+## [2026-11-23] Stage 3 Plan - 归档第三阶段演进方案（稠密混合检索、自适应路由、LLM-Judge、HyperGraph与自演化记忆）
+- **提交类型**：`docs`
+- **变更背景**：基于第二阶段 `GraphRAG-Bench` 双域（Medical + Novel）实测定位的 4 大瓶颈（`local_hash` 召回上限、无类型共现边噪声、ToT 单胜剪枝伤及多面摘要、`Token-F1` 拒答失真）及 2025–2026 前沿范式调研，正式确立并归档第三阶段（Stage 3.1 ~ 3.4）工程实施计划。
+- **主要修改**：
+  - 新增 `docs/stage3_nextgen_graphrag_plan.md`：规划 Stage 3.1（本机稠密嵌入 + BM25 RRF + HippoRAG 2 同义词边与 Query-to-Triple）、Stage 3.2（自适应任务路由 + 非剪枝多分支聚合 + 动态早停）、Stage 3.3（对齐 `GraphRAG-Bench` 官方口径的 LLM-as-a-Judge 评测器 + 语义 OpenIE 与工业 `FMEA_KG.ttl` RDF 导入）以及 Stage 3.4（HyperGraph 多条件超边 + 验证后自演化记忆写回 + 工作台联动），并明确对照 Stage 2 Plan B 同批 50 题的量化验收门槛。
+  - 更新 `README.md` 文档目录索引。
+- **验证方式**：文档结构与 Mermaid 架构图核验完成，通过 `scripts/privacy_check.py --staged --require-changelog`。
+- **隐私与迁移自检**：无密钥、本机绝对路径或私有数据入库。
+
+---
+
 ## [2026-11-22] Stage 2 Closeout - GraphRAG-Bench 双域高难基准归档、第二阶段收尾与云端同步
 - **提交类型**：`docs`
 - **变更背景**：完成 `GraphRAG-Bench` 双域（`Medical` 全量 1.05 MB + `Novel` 2 部长篇，共 50 题 / 300 次本地 `gemma4:12b` 推理）四范式深度基准评测，正式归档第二阶段收尾报告并准备将 Stage 2.4 至收尾的全部提交同步至 GitHub。
