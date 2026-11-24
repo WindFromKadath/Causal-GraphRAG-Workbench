@@ -10,6 +10,7 @@ from llm_graphrag_kg.core.interfaces import (
     BaseVectorStore,
 )
 from llm_graphrag_kg.providers.embedding.local_hash import LocalHashEmbeddingClient
+from llm_graphrag_kg.providers.embedding.ollama_native import OllamaNativeEmbeddingClient
 from llm_graphrag_kg.providers.embedding.openai_compat import OpenAICompatEmbeddingClient
 from llm_graphrag_kg.providers.llm.mock import MockLLMClient
 from llm_graphrag_kg.providers.llm.ollama_native import OllamaNativeLLMClient
@@ -61,12 +62,39 @@ def create_embedding_client(config: AppConfig) -> BaseEmbeddingClient:
     provider = config.env.embedding_provider.strip().lower()
     if provider == "local_hash":
         return LocalHashEmbeddingClient()
+
+    cache_dir = (
+        config.resolve_path(config.env.embedding_cache_dir)
+        if config.env.embedding_cache_dir
+        else (config.storage_path / ".embed_cache")
+    )
+    if provider == "ollama_native":
+        return OllamaNativeEmbeddingClient(
+            base_url=config.env.embedding_base_url,
+            model=config.env.embedding_model,
+            timeout=config.env.embedding_timeout,
+            batch_size=config.env.embedding_batch_size,
+            num_gpu=config.env.embedding_num_gpu,
+            cache_dir=cache_dir,
+        )
     if provider == "openai_compat":
+        # If targeting local Ollama with explicit num_gpu control, route via native `/api/embed`.
+        if config.env.embedding_num_gpu is not None and (":11434" in config.env.embedding_base_url):
+            return OllamaNativeEmbeddingClient(
+                base_url=config.env.embedding_base_url,
+                model=config.env.embedding_model,
+                timeout=config.env.embedding_timeout,
+                batch_size=config.env.embedding_batch_size,
+                num_gpu=config.env.embedding_num_gpu,
+                cache_dir=cache_dir,
+            )
         return OpenAICompatEmbeddingClient(
             base_url=config.env.embedding_base_url,
             api_key=config.env.embedding_api_key,
             model=config.env.embedding_model,
-            timeout=config.env.llm_timeout,
+            timeout=config.env.embedding_timeout,
+            batch_size=config.env.embedding_batch_size,
+            cache_dir=cache_dir,
         )
     raise ValueError(f"Unsupported embedding_provider: {config.env.embedding_provider!r}")
 

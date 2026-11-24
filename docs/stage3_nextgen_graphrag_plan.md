@@ -62,14 +62,17 @@ flowchart TD
   3. **框架能力补齐**：`EnvSettings`、`OllamaNativeLLMClient` 与 `create_llm_client` 新增 `GRAPHRAG_LLM_NUM_GPU` 显式透传与 `prefill_tok_per_s` / `load_seconds` 遥测，并将 `.env.example` 默认基础模型升级为 `qwen3.5:9b`（`num_ctx=16384`、`think=false`、`num_gpu=99`）；同时明确 `gemma4:12b` 在 8 GB 显卡上**严禁**配置 `num_gpu=99`（避免 WDDM PCIe 换页雪崩）。
   4. **Stage 3.1 Embedding 共存约定**：线上 `qwen3.5:9b`（16k ~6.75 GiB）可直接与 `nomic-embed-text`（~0.4 GiB）同驻 8 GB 显存；若接入 `bge-m3`（~1.2 GiB），采用“离线索引与在线问答分时”或 CPU 嵌入 / `OLLAMA_KV_CACHE_TYPE=q8_0` 策略，防止模型反复换出冷加载。
 
-### Stage 3.1：真实稠密嵌入 + BM25 RRF 混合检索 + HippoRAG 2 增强
+### Stage 3.1（已完成）：真实稠密嵌入 + BM25 RRF 混合检索 + HippoRAG 2 增强
 - **目标**：彻底打穿 `local_hash` 在千级切片语料上的召回瓶颈。
-- **核心改动**：
-  1. **稠密语义嵌入接入**：支持本机 Ollama 免费开源嵌入模型（如 `nomic-embed-text` / `bge-m3`）一键配置与批量缓存，保留 `local_hash` 仅作离线单元测试回退；
-  2. **纯 Python BM25 + Dense RRF 融合**（升级 `providers/vector/local_vector_store.py`）：零外部数据库依赖实现词汇精确命中（专有名词/型号/代码）与稠密语义召回的 Reciprocal Rank Fusion；
-  3. **HippoRAG 2 关键特性落地**（升级 `pipelines/retriever.py` & `extraction.py`）：
-     - 自动基于嵌入余弦相似度（`>= 0.85`）为语义等价实体建立 `SYNONYM_OF` 同义词边；
-     - 引入 **Query-to-Triple** 检索，将关系描述向量化，用最匹配的三元组端点作为 PPR 种子。
+- **核心落地**：
+  1. **原生 Ollama 稠密嵌入 + SQLite 批量磁盘缓存**（新增 `providers/embedding/ollama_native.py`，升级 `openai_compat.py` / `config.py` / `factory.py` / `cli.py`）：支持 `/api/embed` 分批编码、截断保护、`num_gpu` 控制、SHA-256 SQLite 缓存与 `check-embed` 联通自检；
+  2. **纯 Python 双语 Okapi BM25 + Dense RRF 融合**（升级 `providers/storage/local_vector.py`）：零外部依赖实现中英文词元化 BM25 与稠密余弦的加权倒数排名融合（`search_hybrid`），并增加维度不匹配明确报错；
+  3. **HippoRAG 2 关键特性落地**（新增 `pipelines/hipporag.py`，升级 `pipelines/retriever.py` / `workflow.py` / `adapters/graphrag_bench.py`）：
+     - 自动基于实体嵌入余弦相似度（`>= 0.85`）生成带原文溯源指针的 `SYNONYM_OF` 同义词边（Medical `+236` 条、Novel `+31` 条）；
+     - 持久化 `SemanticGraphIndex`（`semantic_index.npz` + `semantic_index_meta.json`），实现 **Dense Entity Linking + Query-to-Triple** 关系锚点与 **Passage-Pool 异构 PPR** 联合扩散。
+- **实测验收结果**（同源 50 题、`qwen3.5:9b` + `nomic-embed-text`）：
+  - **Medical (25Q)**：`Ret EvRec` 严格单调跃升至 `70.5%` (`naive_rag`) → `72.6%` (`hybrid_direct`) → **`77.5%`** (`ppr_cot`) → **`79.8%`** (`ppr_tot`，超 ≥75% 验收线 **+4.8pp**)，全模式 `Token-F1` 提升 `+2.5pp~+10.3pp`、`Ans EvCov` 提升 `+1.5pp~+21.3pp`；
+  - **Novel (25Q)**：`Ret EvRec` 暴涨至 `65.9%` → `67.9%` → **`71.9%`** (`ppr_cot`) → **`72.4%`** (`ppr_tot`，超 ≥65% 验收线 **+7.4pp**)，其中 `ppr_cot` 以 `Token-F1 28.1% / ROUGE-L 20.7% / Grounding 100.0%` 登顶，`hybrid_direct` 回答覆盖率 `68.2%` 登顶。
 - **参考源码**：[`OSU-NLP-Group/HippoRAG`](https://github.com/OSU-NLP-Group/HippoRAG)（ICML 2025）。
 
 ### Stage 3.2：自适应任务路由（Adaptive Router）+ 非剪枝多分支聚合 + 动态早停

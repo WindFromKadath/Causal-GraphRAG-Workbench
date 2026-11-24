@@ -6,6 +6,23 @@
 
 ---
 
+## [2026-11-24] Stage 3.1 Retrieval Upgrade - 真实稠密嵌入（Ollama 原生 + SQLite 缓存）、双语 Okapi BM25 + Dense RRF 与 HippoRAG 2（`SYNONYM_OF` + Query-to-Triple）
+- **提交类型**：`feat`
+- **变更背景**：直击 Stage 2/3.0 在千级切片开放语料上 `local_hash` 假向量锁死检索召回率（Medical `47.7%–60.3%`、Novel `29.5%–46.8%`）的核心瓶颈，完整落地 `docs/stage3_nextgen_graphrag_plan.md` 规划的 Stage 3.1 下一代检索底座。
+- **主要修改**：
+  - 新增 `src/llm_graphrag_kg/providers/embedding/ollama_native.py`（`OllamaNativeEmbeddingClient` 与 `EmbeddingDiskCache`）并升级 `openai_compat.py`、`config.py`、`factory.py` 与 `.env.example`：支持 Ollama 原生 `/api/embed` 分批编码、超长截断、`num_gpu` 控制与 SHA-256 SQLite 磁盘缓存；CLI 新增 `check-embed` 自检及 `ingest-grb` / `eval-grb` 的 `--embedder` / `--embedding-model` 参数。
+  - 升级 `src/llm_graphrag_kg/providers/storage/local_vector.py`：零外部依赖新增中英双语 `tokenize_bm25`、Okapi BM25 倒排索引（`search_bm25`）、加权倒数排名融合（`search_hybrid` RRF）及向量维度一致性守卫；同步修正 `.gitignore` 根目录锚定（`/storage/`、`/outputs/`、`/data/private/`），确保源码目录 `src/llm_graphrag_kg/providers/storage/` 正常纳入版本追踪。
+  - 新增 `src/llm_graphrag_kg/pipelines/hipporag.py` 并升级 `pipelines/retriever.py`、`pipelines/workflow.py`、`adapters/graphrag_bench.py` 与 `configs/graphrag_bench.yaml`：实现实体余弦相似度 `SYNONYM_OF` 自动连边（保留原文溯源指针满足 SHACL-lite）、持久化 `SemanticGraphIndex`（`semantic_index.npz` + `semantic_index_meta.json`）、Dense Entity Linking、**Query-to-Triple** 关系锚点以及基于候选文档池（Passage-Pool）与特异性加权边的 HippoRAG 2 异构 PPR。
+  - 新增单元测试 `tests/test_stage3_1_retrieval.py` 覆盖 BM25/RRF、Ollama 原生嵌入批量缓存与工厂路由、`SYNONYM_OF` / Query-to-Triple 持久化及 PPR 端到端链路；新增持续维护学习参考文档 `docs/evolution_and_papers_guide.md`（全阶段架构演进总览、论文范式对照、升级动因与实测收益）并更新 `README.md` 与 `docs/stage3_nextgen_graphrag_plan.md`。
+- **验证方式**：
+  - `ruff check src tests scripts` 0 告警，`pytest -q` **31/31** 全部通过，`llm-graphrag-kg check-embed --embedder ollama_native --model nomic-embed-text` 实测连通（`dim=768`）。
+  - 在 `GraphRAG-Bench` 同源双域 50 题（`seed=42`，`qwen3.5:9b` + `nomic-embed-text`）上全面打穿 Stage 3.1 验收门禁：
+    - **Medical (25Q，门槛 ≥75%)**：`Ret EvRec` 严格单调跃升至 `70.5%` (`naive_rag`) → `72.6%` (`hybrid_direct`) → **`77.5%`** (`ppr_cot`) → **`79.8%`** (`ppr_tot`，Grounding `100.0%`)，新增 `236` 条 `SYNONYM_OF` 边；
+    - **Novel (25Q，门槛 ≥65%)**：`Ret EvRec` 暴涨至 `65.9%` → `67.9%` → **`71.9%`** (`ppr_cot`) → **`72.4%`** (`ppr_tot`)，其中 `ppr_cot` 以 `Token-F1 28.1% / ROUGE-L 20.7% / Grounding 100.0%` 登顶，`hybrid_direct` 回答证据覆盖率 `68.2%` 登顶。
+- **隐私与迁移自检**：`nomic-embed-text` 索引缓存（`.embed_cache`）、双域存储（`storage/graphrag_bench_*_s31`）与评测报告（`outputs/`）均严格隔离在 `.gitignore` 目录，无密钥、本机绝对路径或私有数据入库。
+
+---
+
 ## [2026-11-23] Stage 3.0 Base Model - 确立第三阶段本地基础模型基线（`qwen3.5:9b` + `num_gpu` 控制）、多上下文显存压测与全套任务基准跨模型回归归档
 - **提交类型**：`feat`
 - **变更背景**：在进入 Stage 3.1–3.4 开发前，针对本机 8 GB 显存环境完成 `gemma4:12b`、`qwen3.5:9b`、`qwen3.5:4b` 三款本地模型的 4k→128k 多上下文吞吐与物理显存基准压测，定位 Ollama 默认调度保守卸载瓶颈与 WDDM 换页边界，将实测最优配置固化为第三阶段底层基础模型，并完成全套 4 阶段端到端任务基准重跑对比。

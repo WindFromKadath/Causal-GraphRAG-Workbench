@@ -35,6 +35,14 @@ retrieval:
   k_hops: 2
   top_k_communities: 3
   temperature: 0.1
+  # Stage 3.1: BM25 + Dense RRF & HippoRAG 2
+  enable_hybrid_bm25: true
+  hybrid_bm25_weight: 0.35
+  rrf_k: 60
+  enable_query_to_triple: true
+  top_k_triples: 8
+  enable_synonym_edges: true
+  synonym_cosine_threshold: 0.85
 
 harness:
   enable_compact: true

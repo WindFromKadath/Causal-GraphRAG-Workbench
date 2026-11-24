@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 
 import networkx as nx
@@ -22,6 +23,7 @@ from llm_graphrag_kg.core.schema import (
 )
 from llm_graphrag_kg.harness.context_compactor import ContextCompactor
 from llm_graphrag_kg.harness.runtime import LLMHarness
+from llm_graphrag_kg.pipelines.hipporag import SemanticGraphIndex
 from llm_graphrag_kg.reasoning.cot import GraphCoTEngine
 from llm_graphrag_kg.reasoning.tot import GraphToTEngine
 
@@ -54,6 +56,12 @@ class GraphRAGRetriever:
         tot_beam_width: int = 3,
         tot_max_depth: int = 2,
         tot_max_llm_calls: int = 6,
+        semantic_index: SemanticGraphIndex | None = None,
+        enable_hybrid_bm25: bool = True,
+        hybrid_bm25_weight: float = 0.35,
+        rrf_k: int = 60,
+        enable_query_to_triple: bool = True,
+        top_k_triples: int = 8,
     ) -> None:
         self.llm = llm
         self.embedder = embedder
@@ -70,6 +78,12 @@ class GraphRAGRetriever:
         self.tot_beam_width = tot_beam_width
         self.tot_max_depth = tot_max_depth
         self.tot_max_llm_calls = tot_max_llm_calls
+        self.semantic_index = semantic_index
+        self.enable_hybrid_bm25 = enable_hybrid_bm25
+        self.hybrid_bm25_weight = hybrid_bm25_weight
+        self.rrf_k = rrf_k
+        self.enable_query_to_triple = enable_query_to_triple
+        self.top_k_triples = top_k_triples
 
     def query(
         self,
@@ -96,12 +110,30 @@ class GraphRAGRetriever:
         evidence_by_chunk: dict[str, EvidenceItem] = {}
         ppr_top_scores: dict[str, float] = {}
 
-        # 1. Vector retrieval (used in hybrid, ppr, and as fallback/enrichment for local)
+        # 1. Chunk retrieval: Stage 3.1 Dense + BM25 RRF hybrid (falls back to dense cosine)
+        q_vec: list[float] | None = None
         vector_hits = []
+        ppr_passage_pool = []
+        used_hybrid_rrf = False
         if normalized_mode in {"hybrid", "local", "ppr"}:
             q_vec = self.embedder.embed([question])[0]
-            vector_hits = self.vector_store.search(q_vec, top_k=self.top_k_chunks)
+            pool_k = max(self.top_k_chunks * 3, 15) if normalized_mode == "ppr" else self.top_k_chunks
+            if self.enable_hybrid_bm25 and hasattr(self.vector_store, "search_hybrid"):
+                ppr_passage_pool = self.vector_store.search_hybrid(
+                    q_vec,
+                    question,
+                    top_k=pool_k,
+                    bm25_weight=self.hybrid_bm25_weight,
+                    rrf_k=self.rrf_k,
+                )
+                vector_hits = ppr_passage_pool[: self.top_k_chunks]
+                used_hybrid_rrf = True
+            else:
+                ppr_passage_pool = self.vector_store.search(q_vec, top_k=pool_k)
+                vector_hits = ppr_passage_pool[: self.top_k_chunks]
+
             if normalized_mode in {"hybrid", "ppr"}:
+                vec_tag = "hybrid_rrf" if used_hybrid_rrf else "vector"
                 for chunk, score in vector_hits:
                     evidence_by_chunk[chunk.chunk_id] = EvidenceItem(
                         chunk_id=chunk.chunk_id,
@@ -109,15 +141,51 @@ class GraphRAGRetriever:
                         source=chunk.source,
                         text=chunk.text,
                         score=round(score, 4),
-                        matched_via="vector",
+                        matched_via=vec_tag,
                     )
 
-        # 2. Local KG entity matching + k-hop expansion OR HippoRAG-style PPR diffusion
+        # 2. Local KG entity matching + Stage 3.1 HippoRAG 2 (Dense Entity + Query-to-Triple + PPR)
+        dense_entity_weights: dict[str, float] = {}
+        triple_seed_weights: dict[str, float] = {}
+        triple_hits: list[dict[str, object]] = []
         if normalized_mode in {"local", "hybrid", "ppr"}:
             seed_entities = self.graph_store.find_entities_by_query(
                 question, top_k=self.top_k_entities
             )
-            # If lexical entity match missed, bootstrap seeds from top vector chunks
+            seed_id_seen = {e.entity_id for e in seed_entities}
+            max_seed_cap = max(self.top_k_entities * 2, self.top_k_entities + 4)
+
+            if q_vec is not None and self.semantic_index is not None and self.semantic_index.is_ready:
+                # 2a. Dense entity linking
+                for eid, sc in self.semantic_index.search_entities(
+                    q_vec, top_k=self.top_k_entities
+                ):
+                    dense_entity_weights[eid] = max(dense_entity_weights.get(eid, 0.0), sc)
+                    if eid not in seed_id_seen and len(seed_entities) < max_seed_cap:
+                        ent_obj = self.graph_store.get_entity(eid)
+                        if ent_obj is not None:
+                            seed_entities.append(ent_obj)
+                            seed_id_seen.add(eid)
+
+                # 2b. HippoRAG 2 Query-to-Triple seed anchoring
+                if self.enable_query_to_triple and self.semantic_index.has_triples:
+                    triple_hits = self.semantic_index.search_triples(
+                        q_vec, top_k=self.top_k_triples
+                    )
+                    for hit in triple_hits:
+                        sc = float(hit["score"])
+                        for endpoint_key in ("source_id", "target_id"):
+                            eid = str(hit[endpoint_key])
+                            triple_seed_weights[eid] = max(
+                                triple_seed_weights.get(eid, 0.0), sc
+                            )
+                            if eid not in seed_id_seen and len(seed_entities) < max_seed_cap:
+                                ent_obj = self.graph_store.get_entity(eid)
+                                if ent_obj is not None:
+                                    seed_entities.append(ent_obj)
+                                    seed_id_seen.add(eid)
+
+            # If lexical + semantic entity match still missed, bootstrap seeds from top vector chunks
             if not seed_entities and vector_hits:
                 top_chunk_ids = {chunk.chunk_id for chunk, _ in vector_hits[:2]}
                 for ent in self.graph_store.get_all_entities():
@@ -127,6 +195,7 @@ class GraphRAGRetriever:
                             break
 
             seed_ids = [e.entity_id for e in seed_entities]
+            max_evidence_pool = self.top_k_chunks + 5 if normalized_mode == "ppr" else self.top_k_chunks + 3
             if normalized_mode == "ppr":
                 (
                     expanded_entities,
@@ -135,11 +204,20 @@ class GraphRAGRetriever:
                     ppr_top_scores,
                 ) = self._run_ppr_retrieval(
                     seed_ids=seed_ids,
-                    vector_hits=vector_hits,
+                    vector_hits=ppr_passage_pool or vector_hits,
+                    dense_entity_weights=dense_entity_weights,
+                    triple_seed_weights=triple_seed_weights,
                     max_entities=max(self.compactor.max_entities, self.top_k_entities * 3),
-                    max_chunks=self.top_k_chunks + 3,
+                    max_chunks=max_evidence_pool,
                 )
                 graph_chunk_ids = list(ppr_chunk_ids)
+                # Surface provenance chunks of the highest-scoring Query-to-Triple matches
+                if triple_hits:
+                    rel_map = {r.relation_id: r for r in self.graph_store.get_all_relations()}
+                    for hit in triple_hits[:4]:
+                        rel_obj = rel_map.get(str(hit["relation_id"]))
+                        if rel_obj is not None:
+                            graph_chunk_ids.extend(rel_obj.source_chunk_ids[:2])
             else:
                 expanded_entities, sub_relations = self.graph_store.get_k_hop_subgraph(
                     seed_ids, k_hops=self.k_hops
@@ -168,7 +246,7 @@ class GraphRAGRetriever:
                         score=round(ppr_top_scores.get(f"chunk::{cid}", 1.0), 4),
                         matched_via="ppr" if normalized_mode == "ppr" else "graph",
                     )
-                if len(evidence_by_chunk) >= self.top_k_chunks + 3:
+                if len(evidence_by_chunk) >= max_evidence_pool:
                     break
 
         # 3. Global community summary retrieval
@@ -284,6 +362,13 @@ class GraphRAGRetriever:
             "community_count": len(selected_communities),
             "reasoning_paradigm": normalized_reasoning,
             "harness_ledger": self.harness.ledger.summary(),
+            "retrieval_stage3_1": {
+                "hybrid_bm25_rrf": used_hybrid_rrf,
+                "dense_entity_hits": len(dense_entity_weights),
+                "query_to_triple_hits": [
+                    {"text": str(h["text"]), "score": float(h["score"])} for h in triple_hits[:5]
+                ],
+            },
         }
         if compaction_meta is not None:
             metadata["compaction"] = compaction_meta
@@ -308,11 +393,13 @@ class GraphRAGRetriever:
         *,
         seed_ids: list[str],
         vector_hits: list[tuple[object, float]],
+        dense_entity_weights: dict[str, float] | None = None,
+        triple_seed_weights: dict[str, float] | None = None,
         max_entities: int = 18,
         max_chunks: int = 6,
         alpha: float = 0.85,
     ) -> tuple[list[Entity], list[Relation], list[str], dict[str, float]]:
-        """HippoRAG-inspired Personalized PageRank over heterogeneous entity-chunk graph."""
+        """HippoRAG 2 Personalized PageRank over entity-synonym-chunk heterogeneous graph."""
         all_entities = self.graph_store.get_all_entities()
         all_relations = self.graph_store.get_all_relations()
         if not all_entities:
@@ -323,13 +410,19 @@ class GraphRAGRetriever:
 
         for ent in all_entities:
             graph.add_node(ent.entity_id)
+            # Specificity-weighted entity-chunk link (dampens generic high-frequency hubs)
+            deg_scale = math.sqrt(max(1, len(ent.source_chunk_ids)))
+            ec_weight = 0.5 / deg_scale
             for cid in ent.source_chunk_ids:
                 cnode = f"chunk::{cid}"
-                graph.add_edge(ent.entity_id, cnode, weight=0.5)
+                graph.add_edge(ent.entity_id, cnode, weight=ec_weight)
 
         for rel in all_relations:
             if rel.source_id in ent_map and rel.target_id in ent_map:
-                w = max(0.1, float(rel.weight))
+                if rel.relation_type == "SYNONYM_OF":
+                    w = max(0.3, float(rel.weight))
+                else:
+                    w = max(0.1, float(rel.weight))
                 if graph.has_edge(rel.source_id, rel.target_id):
                     graph[rel.source_id][rel.target_id]["weight"] += w
                 else:
@@ -339,11 +432,19 @@ class GraphRAGRetriever:
         for eid in seed_ids:
             if eid in graph:
                 personalization[eid] = personalization.get(eid, 0.0) + 1.0
+        for eid, sc in (dense_entity_weights or {}).items():
+            if eid in graph:
+                personalization[eid] = personalization.get(eid, 0.0) + 0.8 * max(0.1, float(sc))
+        for eid, sc in (triple_seed_weights or {}).items():
+            if eid in graph:
+                personalization[eid] = personalization.get(eid, 0.0) + 1.2 * max(0.1, float(sc))
         for chunk, score in vector_hits:
             cid = getattr(chunk, "chunk_id", "")
             cnode = f"chunk::{cid}"
             if cnode in graph:
-                personalization[cnode] = personalization.get(cnode, 0.0) + max(0.2, float(score))
+                personalization[cnode] = personalization.get(cnode, 0.0) + max(
+                    0.25, float(score) * 1.5
+                )
 
         if not personalization:
             return [], [], [], {}

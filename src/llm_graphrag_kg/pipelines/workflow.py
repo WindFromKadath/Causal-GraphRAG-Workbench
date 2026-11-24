@@ -17,6 +17,7 @@ from llm_graphrag_kg.harness.context_compactor import ContextCompactor
 from llm_graphrag_kg.harness.runtime import LLMHarness
 from llm_graphrag_kg.pipelines.community import CommunityDetector
 from llm_graphrag_kg.pipelines.extraction import KnowledgeExtractor
+from llm_graphrag_kg.pipelines.hipporag import SemanticGraphIndex, build_synonym_edges
 from llm_graphrag_kg.pipelines.ingestion import DocumentIngestor
 from llm_graphrag_kg.pipelines.retriever import GraphRAGRetriever
 from llm_graphrag_kg.providers.factory import (
@@ -44,6 +45,7 @@ class GraphRAGPipeline:
         self.embedder = embedder or create_embedding_client(config)
         self.graph_store = graph_store or create_graph_store()
         self.vector_store = vector_store or create_vector_store()
+        self.semantic_index = SemanticGraphIndex()
 
     def build(
         self,
@@ -66,6 +68,7 @@ class GraphRAGPipeline:
         # Reset fresh stores for deterministic rebuild
         self.graph_store = create_graph_store()
         self.vector_store = create_vector_store()
+        self.semantic_index = SemanticGraphIndex()
 
         # 1. Embed and store chunks
         if chunks:
@@ -86,6 +89,24 @@ class GraphRAGPipeline:
             for relation in relations:
                 self.graph_store.upsert_relation(relation)
 
+        # 2.5 Stage 3.1 HippoRAG 2: SYNONYM_OF auto-linking + Semantic Entity/Triple Index
+        synonym_edges_added = 0
+        precomputed_entities = None
+        if self.config.retrieval.enable_synonym_edges:
+            synonym_edges_added, ent_ids, ent_vecs = build_synonym_edges(
+                self.graph_store,
+                self.embedder,
+                cosine_threshold=self.config.retrieval.synonym_cosine_threshold,
+                max_synonyms_per_entity=self.config.retrieval.max_synonyms_per_entity,
+            )
+            precomputed_entities = (ent_ids, ent_vecs)
+        sem_stats = self.semantic_index.build(
+            self.graph_store,
+            self.embedder,
+            precomputed_entities=precomputed_entities,
+            max_indexed_triples=self.config.retrieval.max_indexed_triples,
+        )
+
         # 3. Detect communities
         use_llm_summary = (
             self.config.community.summarize_with_llm
@@ -103,9 +124,14 @@ class GraphRAGPipeline:
         dst_dir.mkdir(parents=True, exist_ok=True)
         self.graph_store.save(dst_dir)
         self.vector_store.save(dst_dir)
+        self.semantic_index.save(dst_dir)
         manifest = {
             "doc_count": len(documents),
             "chunk_count": len(chunks),
+            "embedding_provider": self.config.env.embedding_provider,
+            "embedding_model": self.config.env.embedding_model,
+            "synonym_edges_added": synonym_edges_added,
+            "semantic_index": sem_stats,
             "documents": [
                 {"doc_id": d.doc_id, "source": d.source, "title": d.title} for d in documents
             ],
@@ -119,10 +145,11 @@ class GraphRAGPipeline:
         return compute_audit_stats(self.graph_store, self.vector_store, doc_count=len(documents))
 
     def load(self, storage_dir: Path | None = None) -> int:
-        """Load persisted graph and vector stores from disk; returns document count."""
+        """Load persisted graph, vector, and semantic stores from disk; returns document count."""
         src_dir = storage_dir or self.config.storage_path
         self.graph_store.load(src_dir)
         self.vector_store.load(src_dir)
+        self.semantic_index.load(src_dir)
         manifest_path = src_dir / "manifest.json"
         if manifest_path.is_file():
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -175,6 +202,12 @@ class GraphRAGPipeline:
             tot_beam_width=self.config.reasoning.tot_beam_width,
             tot_max_depth=self.config.reasoning.tot_max_depth,
             tot_max_llm_calls=self.config.reasoning.tot_max_llm_calls,
+            semantic_index=self.semantic_index,
+            enable_hybrid_bm25=self.config.retrieval.enable_hybrid_bm25,
+            hybrid_bm25_weight=self.config.retrieval.hybrid_bm25_weight,
+            rrf_k=self.config.retrieval.rrf_k,
+            enable_query_to_triple=self.config.retrieval.enable_query_to_triple,
+            top_k_triples=self.config.retrieval.top_k_triples,
         )
         return retriever.query(
             question,

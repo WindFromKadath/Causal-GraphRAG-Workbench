@@ -17,6 +17,7 @@ from llm_graphrag_kg.core.interfaces import BaseEmbeddingClient, BaseLLMClient
 from llm_graphrag_kg.core.schema import Entity, GraphAuditStats, Relation
 from llm_graphrag_kg.pipelines.community import CommunityDetector
 from llm_graphrag_kg.pipelines.extraction import make_entity_id, make_relation_id
+from llm_graphrag_kg.pipelines.hipporag import SemanticGraphIndex, build_synonym_edges
 from llm_graphrag_kg.pipelines.ingestion import DocumentIngestor
 from llm_graphrag_kg.pipelines.workflow import GraphRAGPipeline
 from llm_graphrag_kg.providers.factory import (
@@ -123,6 +124,7 @@ class GRBEvalReport(BaseModel):
     source_filter: str = "ALL"
     total_questions: int
     llm_model: str
+    embedding_model: str = ""
     modes: list[GRBModeSummary] = Field(default_factory=list)
 
 
@@ -323,6 +325,25 @@ def ingest_graphrag_bench_corpus(
     for r in relations:
         gs.upsert_relation(r)
 
+    # Stage 3.1 HippoRAG 2: SYNONYM_OF auto-linking + Semantic Entity/Triple Index
+    synonym_edges_added = 0
+    precomputed_entities = None
+    if config.retrieval.enable_synonym_edges:
+        synonym_edges_added, ent_ids, ent_vecs = build_synonym_edges(
+            gs,
+            active_embedder,
+            cosine_threshold=config.retrieval.synonym_cosine_threshold,
+            max_synonyms_per_entity=config.retrieval.max_synonyms_per_entity,
+        )
+        precomputed_entities = (ent_ids, ent_vecs)
+    sem_idx = SemanticGraphIndex()
+    sem_stats = sem_idx.build(
+        gs,
+        active_embedder,
+        precomputed_entities=precomputed_entities,
+        max_indexed_triples=config.retrieval.max_indexed_triples,
+    )
+
     detector = CommunityDetector(
         resolution=config.community.resolution,
         seed=config.community.seed,
@@ -332,9 +353,14 @@ def ingest_graphrag_bench_corpus(
 
     gs.save(out_storage)
     vs.save(out_storage)
+    sem_idx.save(out_storage)
     manifest = {
         "doc_count": len(documents),
         "chunk_count": len(chunks),
+        "embedding_provider": config.env.embedding_provider,
+        "embedding_model": config.env.embedding_model,
+        "synonym_edges_added": synonym_edges_added,
+        "semantic_index": sem_stats,
         "documents": [
             {"doc_id": d.doc_id, "source": d.source, "title": d.title} for d in documents
         ],
@@ -578,11 +604,17 @@ def evaluate_graphrag_bench(
             )
         )
 
+    embed_label = (
+        f"{config.env.embedding_provider}/{config.env.embedding_model}"
+        if config.env.embedding_provider != "local_hash"
+        else "local_hash"
+    )
     report = GRBEvalReport(
         question_type_filter=question_type,
         source_filter=source_filter or "ALL",
         total_questions=len(sampled),
         llm_model=config.env.llm_model,
+        embedding_model=embed_label,
         modes=summaries,
     )
     (out_dir / "grb_eval_results.json").write_text(
@@ -600,7 +632,10 @@ def evaluate_graphrag_bench(
     md_lines = [
         f"# GraphRAG-Bench 多范式评测报告（`{question_type}` | tag=`{output_tag}`）",
         "",
-        f"- **题数**：`{len(sampled)}` | **语料过滤**：`{source_filter or 'ALL'}` | **模型**：`{config.env.llm_model}`",
+        (
+            f"- **题数**：`{len(sampled)}` | **语料过滤**：`{source_filter or 'ALL'}` | "
+            f"**模型**：`{config.env.llm_model}` | **嵌入**：`{embed_label}`"
+        ),
         "",
         "| 范式模式 | Token-F1 | ROUGE-L | 回答证据覆盖 | 检索证据召回 | Grounding | 平均调用 | 平均耗时 |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",

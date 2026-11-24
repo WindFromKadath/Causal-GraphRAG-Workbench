@@ -26,7 +26,7 @@ from llm_graphrag_kg.adapters.graphrag_bench import (
 )
 from llm_graphrag_kg.config import load_config
 from llm_graphrag_kg.pipelines.workflow import GraphRAGPipeline
-from llm_graphrag_kg.providers.factory import create_llm_client
+from llm_graphrag_kg.providers.factory import create_embedding_client, create_llm_client
 from llm_graphrag_kg.viz.audit_report import export_audit_artifacts
 from llm_graphrag_kg.viz.graphml_exporter import export_graphml
 from llm_graphrag_kg.viz.html_exporter import export_pyvis_html
@@ -61,6 +61,33 @@ def check_llm(
     ok, msg = client.health_check()
     style = "green" if ok else "red"
     console.print(Panel(msg, title="LLM Connectivity Check", border_style=style))
+    if not ok:
+        raise typer.Exit(code=1)
+
+
+@app.command("check-embed")
+def check_embed(
+    embedder: Annotated[
+        str | None,
+        typer.Option(help="Override embedding provider: ollama_native | openai_compat | local_hash"),
+    ] = None,
+    model: Annotated[
+        str | None, typer.Option("--model", help="Optional embedding model override.")
+    ] = None,
+    config_file: Annotated[Path | None, typer.Option(help="Optional YAML config path.")] = None,
+) -> None:
+    """Verify dense embedding endpoint connectivity and output vector dimension."""
+    cfg = load_config(config_path=config_file, embedding_provider_override=embedder)
+    if model:
+        cfg.env.embedding_model = model
+    client = create_embedding_client(cfg)
+    if hasattr(client, "health_check"):
+        ok, msg = client.health_check()
+    else:
+        vecs = client.embed(["graphrag health check"])
+        ok, msg = True, f"Local hash embedder ready: dim={len(vecs[0]) if vecs else 0}"
+    style = "green" if ok else "red"
+    console.print(Panel(msg, title="Embedding Connectivity Check", border_style=style))
     if not ok:
         raise typer.Exit(code=1)
 
@@ -743,9 +770,22 @@ def ingest_grb(
     provider: Annotated[
         str | None, typer.Option(help="Override LLM provider when --llm-extract is set.")
     ] = None,
+    embedder: Annotated[
+        str | None,
+        typer.Option(help="Override embedding provider: ollama_native | openai_compat | local_hash"),
+    ] = None,
+    embedding_model: Annotated[
+        str | None, typer.Option("--embedding-model", help="Optional dense embedding model override.")
+    ] = None,
 ) -> None:
     """Ingest GraphRAG-Bench corpus (zero question leakage) into KG & vector storage."""
-    cfg = load_config(config_path=config_file, llm_provider_override=provider)
+    cfg = load_config(
+        config_path=config_file,
+        llm_provider_override=provider,
+        embedding_provider_override=embedder,
+    )
+    if embedding_model:
+        cfg.env.embedding_model = embedding_model
     stats = ingest_graphrag_bench_corpus(
         corpus_path=corpus,
         config=cfg,
@@ -805,6 +845,13 @@ def eval_grb(
     provider: Annotated[
         str | None, typer.Option(help="Override LLM provider: ollama_native | openai_compat | mock")
     ] = None,
+    embedder: Annotated[
+        str | None,
+        typer.Option(help="Override embedding provider: ollama_native | openai_compat | local_hash"),
+    ] = None,
+    embedding_model: Annotated[
+        str | None, typer.Option("--embedding-model", help="Optional dense embedding model override.")
+    ] = None,
     think: Annotated[
         bool | None,
         typer.Option("--think/--no-think", help="Control Ollama thinking mode."),
@@ -814,7 +861,13 @@ def eval_grb(
     ] = 16384,
 ) -> None:
     """Evaluate Naive RAG vs Hybrid vs PPR+CoT vs PPR+ToT on GraphRAG-Bench."""
-    cfg = load_config(config_path=config_file, llm_provider_override=provider)
+    cfg = load_config(
+        config_path=config_file,
+        llm_provider_override=provider,
+        embedding_provider_override=embedder,
+    )
+    if embedding_model:
+        cfg.env.embedding_model = embedding_model
     if think is not None:
         cfg.env.llm_think = think
     if num_ctx is not None:

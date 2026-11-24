@@ -51,6 +51,16 @@ class RetrievalConfig(BaseModel):
     k_hops: int = 1
     top_k_communities: int = 3
     temperature: float = 0.2
+    # Stage 3.1: Dense + BM25 RRF hybrid & HippoRAG 2 extensions (backward-compatible defaults)
+    enable_hybrid_bm25: bool = True
+    hybrid_bm25_weight: float = 0.35
+    rrf_k: int = 60
+    enable_query_to_triple: bool = True
+    top_k_triples: int = 8
+    enable_synonym_edges: bool = True
+    synonym_cosine_threshold: float = 0.85
+    max_synonyms_per_entity: int = 5
+    max_indexed_triples: int = 3000
 
 
 class VisualizationConfig(BaseModel):
@@ -100,6 +110,10 @@ class EnvSettings(BaseSettings):
     embedding_base_url: str = "http://127.0.0.1:11434/v1"
     embedding_api_key: str = "local-no-key"
     embedding_model: str = "nomic-embed-text"
+    embedding_timeout: int = 120
+    embedding_batch_size: int = 32
+    embedding_num_gpu: int | None = None
+    embedding_cache_dir: str | None = None
 
 
 class AppConfig(BaseModel):
@@ -145,6 +159,8 @@ class AppConfig(BaseModel):
             "embedding_provider": self.env.embedding_provider,
             "embedding_base_url": self.env.embedding_base_url,
             "embedding_model": self.env.embedding_model,
+            "embedding_num_gpu": self.env.embedding_num_gpu,
+            "embedding_batch_size": self.env.embedding_batch_size,
             "embedding_api_key": mask_secret(self.env.embedding_api_key),
             "paths": self.paths.model_dump(),
         }

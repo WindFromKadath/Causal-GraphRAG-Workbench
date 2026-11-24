@@ -27,6 +27,7 @@ LLM-GraphRAG-KG/
 │   ├── sample/                  # 轻量基础演示语料（3 篇）
 │   └── sample_fault_diagnosis/  # 工程部署与工业故障诊断脱敏语料（6 篇，含多跳因果链）
 ├── docs/
+│   ├── evolution_and_papers_guide.md        # ★ 架构演进总览与论文范式学习手册（Stage 1 → 3.4，持续更新）
 │   ├── engineering_deployment.md            # 工程部署、离线迁移与存储演进指南
 │   ├── troubleshooting_diagnosis.md         # 系统故障诊断与排障手册（FD-01 ~ FD-08）
 │   ├── stage2_harness_reasoning_plan.md        # 第二阶段规划：LLM Harness + Compact + 显性 CoT/ToT

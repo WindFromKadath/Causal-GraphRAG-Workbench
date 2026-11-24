@@ -33,11 +33,11 @@ configs/*.local.yaml
 configs/*.local.yml
 
 # Private data, runtime storage & generated outputs (NEVER commit)
-data/private/
-data/raw/
-storage/
-outputs/
-logs/
+/data/private/
+/data/raw/
+/storage/
+/outputs/
+/logs/
 *.log
 *.db
 *.sqlite
