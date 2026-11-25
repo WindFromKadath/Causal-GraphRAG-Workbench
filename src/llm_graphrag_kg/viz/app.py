@@ -15,10 +15,12 @@ Launch via:
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -29,6 +31,7 @@ from llm_graphrag_kg.viz.audit_report import compute_audit_stats, export_audit_a
 from llm_graphrag_kg.viz.graphml_exporter import export_graphml
 from llm_graphrag_kg.viz.html_exporter import render_pyvis_html
 from llm_graphrag_kg.viz.schema_validator import validate_kg_shacl_lite
+from llm_graphrag_kg.viz.tot_tree_exporter import render_tot_tree_html
 from llm_graphrag_kg.viz.workbench_data import (
     build_chunk_records,
     build_community_records,
@@ -42,6 +45,84 @@ from llm_graphrag_kg.viz.workbench_data import (
 )
 
 PRIMARY_DATASET_CONFIG = "configs/failuresensoriq.yaml"
+
+DATASET_DISPLAY_META: dict[str, tuple[str, str]] = {
+    "configs/failuresensoriq.yaml": (
+        "🏭 IBM FailureSensorIQ（工业 ISO 四层本体）",
+        "233 实体 / 692 边 · 10 类旋转设备失效模式与传感器标准本体",
+    ),
+    "configs/graphrag_bench_medical.yaml": (
+        "🏥 GraphRAG-Bench Medical（医学多跳 · Stage 3.1）",
+        "1,528 切片 / 450 实体 / 6,758 边（含 236 条 SYNONYM_OF）· nomic-embed-text 768d",
+    ),
+    "configs/graphrag_bench_novel.yaml": (
+        "📖 GraphRAG-Bench Novel（长篇叙事 · Stage 3.1）",
+        "702 切片 / 450 实体 / 2,714 边（含 31 条 SYNONYM_OF）· nomic-embed-text 768d",
+    ),
+    "configs/fault_diagnosis.yaml": (
+        "⚙️ 工业故障诊断脱敏语料（多症状并发案例）",
+        "6 篇跨文档因果语料 · 推荐用于演示 ToT 多假设反证剪枝与激光对中 SOP",
+    ),
+    "configs/graphrag_bench.yaml": (
+        "🧪 GraphRAG-Bench 通用模板配置",
+        "基础调试配置（可自定义存储目录与语料）",
+    ),
+    "configs/default.yaml": (
+        "📘 默认演示语料（入门示例）",
+        "3 篇轻量 GraphRAG 入门语料",
+    ),
+}
+
+
+def _detect_storage_embedding_profile(
+    storage_dir: Path,
+) -> tuple[str | None, str | None, int | None, dict[str, Any]]:
+    """Inspect persisted `manifest.json` / `embeddings.npy` to auto-align query embedder."""
+    manifest: dict[str, Any] = {}
+    manifest_file = storage_dir / "manifest.json"
+    if manifest_file.is_file():
+        try:
+            parsed = json.loads(manifest_file.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                manifest = parsed
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
+
+    vec_dim: int | None = None
+    meta_file = storage_dir / "vector_meta.json"
+    if meta_file.is_file():
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            if isinstance(meta, dict) and meta.get("vector_dim"):
+                vec_dim = int(meta["vector_dim"])
+        except (OSError, json.JSONDecodeError, ValueError):
+            vec_dim = None
+    if vec_dim is None:
+        vec_file = storage_dir / "embeddings.npy"
+        if vec_file.is_file():
+            try:
+                arr = np.load(vec_file, mmap_mode="r")
+                if arr.ndim == 2 and arr.shape[1] > 0:
+                    vec_dim = int(arr.shape[1])
+            except (OSError, ValueError):
+                vec_dim = None
+
+    emb_provider = manifest.get("embedding_provider")
+    emb_model = manifest.get("embedding_model")
+    if isinstance(emb_provider, str) and emb_provider.strip():
+        return (
+            emb_provider.strip().lower(),
+            str(emb_model).strip() if emb_model else None,
+            vec_dim,
+            manifest,
+        )
+
+    # Legacy Stage 1/2 storages without manifest embedding metadata: infer safely from vector dim
+    if vec_dim == 256:
+        return "local_hash", "local_hash", 256, manifest
+    if vec_dim == 768:
+        return "ollama_native", "nomic-embed-text", 768, manifest
+    return None, None, vec_dim, manifest
 
 
 def _render_html_embed(html: str, *, height: int) -> None:
@@ -105,10 +186,15 @@ def _default_question_for_config(cfg_rel: str) -> str:
         )
     if "fault_diagnosis" in cfg_rel:
         return "离心泵机组同时出现2倍频振动升高、轴承温升异常且电机定子电流波动，应如何定位根因并执行SOP？"
+    if "graphrag_bench_novel" in cfg_rel:
+        return (
+            "How do the central characters' relationships and key recurring events connect "
+            "across the narrative to drive the main conflict?"
+        )
     if "graphrag_bench" in cfg_rel:
         return (
             "Why is a patient with fair skin and a history of organ transplant at high risk "
-            "for basal cell carcinoma?"
+            "for basal cell carcinoma, and what diagnostic or treatment steps are discussed?"
         )
     return "GraphRAG 如何结合知识图谱解决多跳推理并支持迁移至 Neo4j？"
 
@@ -119,14 +205,26 @@ def _render_sidebar() -> tuple[AppConfig, Path, Path, str]:
 
         config_files = _discover_config_files()
         selected_cfg_rel = st.selectbox(
-            "场景配置文件 (YAML)",
+            "数据集 / 场景配置 (YAML)",
             options=config_files,
             index=0,
+            format_func=lambda rel: (
+                f"{DATASET_DISPLAY_META[rel][0]}  ({rel})"
+                if rel in DATASET_DISPLAY_META
+                else rel
+            ),
             help=(
-                "默认锁定 Stage 2.4 主验收数据集 `configs/failuresensoriq.yaml`（233实体/692边），"
-                "亦可随时切换至故障诊断或 GraphRAG-Bench 配置。"
+                "支持在 FailureSensorIQ（工业本体）、GraphRAG-Bench Medical（医学多跳）、"
+                "GraphRAG-Bench Novel（长篇叙事）与工业故障诊断间一键切换。"
             ),
         )
+        if st.session_state.get("_active_cfg_rel") != selected_cfg_rel:
+            st.session_state["_active_cfg_rel"] = selected_cfg_rel
+            st.session_state.pop("last_query_result", None)
+
+        if selected_cfg_rel in DATASET_DISPLAY_META:
+            st.caption(DATASET_DISPLAY_META[selected_cfg_rel][1])
+
         selected_cfg_path = Path.cwd() / selected_cfg_rel
 
         provider_choice = st.selectbox(
@@ -136,15 +234,27 @@ def _render_sidebar() -> tuple[AppConfig, Path, Path, str]:
             help="默认读取本地 .env；选择 ollama_native 可精确控制 --no-think；mock 可离线调试。",
         )
         provider_override = None if provider_choice == "default (.env)" else provider_choice
+        embedder_choice = st.selectbox(
+            "Embedding Provider",
+            options=["auto (跟随索引)", "ollama_native", "local_hash", "openai_compat"],
+            index=0,
+            help=(
+                "推荐保持 auto：自动根据所选数据集索引维度对齐嵌入后端"
+                "（Medical/Novel 使用 nomic-embed-text 768d；FailureSensorIQ 使用 local_hash 256d）。"
+            ),
+        )
         disable_think = st.checkbox(
             "关闭黑盒思考 (think=False)",
             value=True,
-            help="Stage 2 推荐：关闭模型不可控隐式思考，交由显性 Graph-CoT/ToT 引擎输出可审计步骤。",
+            help="Stage 2/3 推荐：关闭模型不可控隐式思考，交由显性 Graph-CoT/ToT 引擎输出可审计步骤。",
         )
 
         cfg = load_config(
             config_path=selected_cfg_path,
             llm_provider_override=provider_override,
+            embedding_provider_override=(
+                None if embedder_choice == "auto (跟随索引)" else embedder_choice
+            ),
         )
         if disable_think:
             cfg.env.llm_think = False
@@ -162,6 +272,26 @@ def _render_sidebar() -> tuple[AppConfig, Path, Path, str]:
 
         input_dir = cfg.resolve_path(input_rel)
         storage_dir = cfg.resolve_path(storage_rel)
+
+        det_prov, det_model, det_dim, det_manifest = _detect_storage_embedding_profile(storage_dir)
+        if embedder_choice == "auto (跟随索引)" and det_prov:
+            cfg.env.embedding_provider = det_prov
+            if det_model and det_prov != "local_hash":
+                cfg.env.embedding_model = det_model
+        if det_prov:
+            dim_str = f"{det_dim}d" if det_dim else "?"
+            sem_info = det_manifest.get("semantic_index")
+            syn_cnt = det_manifest.get("synonym_edges_added")
+            extra_s31 = ""
+            if isinstance(sem_info, dict) and sem_info.get("indexed_triples"):
+                extra_s31 = (
+                    f" · HippoRAG 2 (`SYNONYM_OF={syn_cnt or 0}`, "
+                    f"三元组索引 `{sem_info['indexed_triples']}`)"
+                )
+            st.caption(
+                f"🧬 索引嵌入：`{cfg.env.embedding_provider}` / `{cfg.env.embedding_model}` "
+                f"({dim_str}){extra_s31}"
+            )
 
         with st.expander("当前脱敏配置预览", expanded=False):
             st.json(cfg.redacted_summary())
@@ -380,15 +510,47 @@ def _render_graph_tab(
 
 
 def _render_reasoning_replay(
+    result: Any,
     reasoning_data: dict[str, Any],
     pipeline: GraphRAGPipeline,
 ) -> None:
-    """Render MindMap + Faithful-CoT dual-track replay with readable labels & audit badges."""
+    """Render interactive ToT Tree + Causal Chain view alongside auditable step cards."""
     ent_labels, rel_labels = build_readable_citation_maps(pipeline.graph_store)
     paradigm = str(reasoning_data.get("paradigm", "cot")).upper()
     audit = reasoning_data.get("grounding_audit", {})
 
-    st.markdown(f"### 🧠 显性思维回放与忠实度审计（`Graph-{paradigm}`）")
+    st.markdown(f"### 🌳 基于思维树的透明推理与因果链条解析（`Graph-{paradigm}`）")
+    tree_html = render_tot_tree_html(
+        result,
+        pipeline.graph_store,
+        vector_store=pipeline.vector_store,
+        embedded=True,
+    )
+    standalone_tree_html = render_tot_tree_html(
+        result,
+        pipeline.graph_store,
+        vector_store=pipeline.vector_store,
+        embedded=False,
+    )
+    _render_html_embed(tree_html, height=960)
+    st.download_button(
+        "⬇️ 下载离线演示版：思维树与因果链条解析网页 (.html)",
+        data=standalone_tree_html.encode("utf-8"),
+        file_name="tot_reasoning_tree.html",
+        mime="text/html",
+        help="零外部依赖单文件 HTML，可直接放入 PPT 超链接或在浏览器离线演示、打印为 PDF。",
+    )
+
+    route_info = reasoning_data.get("route_decision")
+    if isinstance(route_info, dict):
+        st.info(
+            f"🧭 **Adaptive Router 自适应分流**：`{route_info.get('route')}` → "
+            f"`Graph-{str(route_info.get('target_paradigm', '')).upper()}` · "
+            f"首跳覆盖率 **{float(route_info.get('coverage_score', 0.0)) * 100:.1f}%**"
+            + (" · ⚡ 已触发动态早停" if route_info.get("early_stop") else "")
+            + (f"\n\n{route_info.get('reason', '')}" if route_info.get("reason") else "")
+        )
+
     if isinstance(audit, dict):
         score_pct = float(audit.get("grounding_score", 0.0)) * 100.0
         g_steps = int(audit.get("grounded_steps", 0))
@@ -476,9 +638,12 @@ def _render_query_tab(pipeline: GraphRAGPipeline, cfg: AppConfig, cfg_rel: str) 
     mode = c1.selectbox("检索模式", options=["ppr", "hybrid", "local", "global"], index=0)
     reasoning = c2.selectbox(
         "显性思维范式",
-        options=["cot", "tot", "direct"],
+        options=["auto", "cot", "cot_iter", "tot", "tot_bfs", "tot_dfs", "multi_branch", "direct"],
         index=0,
-        help="cot=4步显性图谱思维链+GroundingAudit；tot=多假设分支查图+反证剪枝+L2折叠；direct=单轮直出",
+        help=(
+            "auto=自适应路由；cot_iter=论文版迭代图工具CoT；tot_bfs=多层束搜索ToT；"
+            "tot_dfs=多层深度回溯ToT；multi_branch=非剪枝多分支聚合；tot=单层剪枝；cot=单轮显性链"
+        ),
     )
     enable_compact = c3.checkbox("启用 Compact", value=cfg.harness.enable_compact)
     k_hops = c4.slider("子图跳数", min_value=1, max_value=3, value=cfg.retrieval.k_hops)
@@ -538,7 +703,7 @@ def _render_query_tab(pipeline: GraphRAGPipeline, cfg: AppConfig, cfg_rel: str) 
     # Render Explicit CoT / ToT Replay when available
     reasoning_data = result.metadata.get("reasoning")
     if isinstance(reasoning_data, dict):
-        _render_reasoning_replay(reasoning_data, pipeline)
+        _render_reasoning_replay(result, reasoning_data, pipeline)
 
     st.markdown("### 🕸️ 检索与推理子图联动高亮")
     st.caption(

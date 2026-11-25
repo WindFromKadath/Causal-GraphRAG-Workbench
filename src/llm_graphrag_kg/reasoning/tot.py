@@ -51,6 +51,8 @@ class GraphToTEngine:
         max_depth: int = 2,
         max_llm_calls: int = 6,
         temperature: float = 0.1,
+        synthesis_mode: str = "competitive",  # competitive (ToT prune) | additive (multi_branch union)
+        min_branch_score: float = 0.25,
     ) -> None:
         self.harness = harness
         self.graph_store = graph_store
@@ -61,6 +63,10 @@ class GraphToTEngine:
         self.max_depth = max(1, min(max_depth, 3))
         self.max_llm_calls = max(3, max_llm_calls)
         self.temperature = temperature
+        self.synthesis_mode = (
+            "additive" if synthesis_mode.strip().lower() == "additive" else "competitive"
+        )
+        self.min_branch_score = min_branch_score
 
     def run(
         self,
@@ -138,18 +144,31 @@ class GraphToTEngine:
         )
 
         # =====================================================================
-        # PHASE 1: BRANCH (Propose 2..beam_width mutually distinct hypotheses)
+        # PHASE 1: BRANCH (Competitive hypotheses OR complementary multi-facet angles)
         # =====================================================================
-        branch_instruction = (
-            "GRAPH_TOT_BRANCH_TASK\n"
-            f"Propose {self.beam_width} distinct candidate hypotheses (H1..H{self.beam_width}), "
-            "keeping each `hypothesis` and `rationale` under 15 words. "
-            "Map each to an exact `target_entity_id` from Candidate KG Entities.\n"
-            "Return strict JSON:\n"
-            '{"branches": [{"branch_id": "H1", "hypothesis": "<short claim>", '
-            '"target_entity_id": "ent_...", "target_entity_name": "<name>", '
-            '"rationale": "<short why>"}]}'
-        )
+        if self.synthesis_mode == "additive":
+            branch_instruction = (
+                "GRAPH_MULTI_BRANCH_FACET_TASK\n"
+                f"Decompose the question into {self.beam_width} COMPLEMENTARY facets/sub-topics "
+                f"(H1..H{self.beam_width}) that together cover all dimensions of the question. "
+                "Keep each `hypothesis` (facet summary) and `rationale` under 15 words. "
+                "Map each facet to an exact `target_entity_id` from Candidate KG Entities.\n"
+                "Return strict JSON:\n"
+                '{"branches": [{"branch_id": "H1", "hypothesis": "<facet focus>", '
+                '"target_entity_id": "ent_...", "target_entity_name": "<name>", '
+                '"rationale": "<short why>"}]}'
+            )
+        else:
+            branch_instruction = (
+                "GRAPH_TOT_BRANCH_TASK\n"
+                f"Propose {self.beam_width} distinct candidate hypotheses (H1..H{self.beam_width}), "
+                "keeping each `hypothesis` and `rationale` under 15 words. "
+                "Map each to an exact `target_entity_id` from Candidate KG Entities.\n"
+                "Return strict JSON:\n"
+                '{"branches": [{"branch_id": "H1", "hypothesis": "<short claim>", '
+                '"target_entity_id": "ent_...", "target_entity_name": "<name>", '
+                '"rationale": "<short why>"}]}'
+            )
         branch_prompt = LLMHarness.compile_prompt(
             context_text=seed_context,
             question=question,
@@ -281,6 +300,7 @@ class GraphToTEngine:
                     target_entity_id=resolved_ent.entity_id if resolved_ent else "",
                     target_entity_name=resolved_ent.name if resolved_ent else prop.target_entity_name,
                     depth=min(self.max_depth, 2),
+                    explored_entity_ids=[e.entity_id for e in b_ents[:18]],
                     supporting_relations=[r.relation_id for r in b_rels[:8]],
                     supporting_chunks=[ev.chunk_id for ev in b_evidences[:4]],
                     deterministic_graph_score=det_score,
@@ -290,8 +310,23 @@ class GraphToTEngine:
             )
 
         # =====================================================================
-        # PHASE 3: SCORE & PRUNE (Joint evaluation + explicit counter-evidence + L2 fold)
+        # PHASE 3: SCORE & PRUNE (Competitive ToT) OR NON-PRUNING RETENTION (Additive Multi-Branch)
         # =====================================================================
+        if self.synthesis_mode == "additive":
+            return self._execute_additive_synthesis(
+                question=question,
+                initial_entities=entities,
+                initial_evidences=evidences,
+                communities=communities,
+                grounded_branches=grounded_branches,
+                branch_evidence_packs=branch_evidence_packs,
+                union_entities=union_entities,
+                union_relations=union_relations,
+                union_evidences=union_evidences,
+                raw_initial_tokens=raw_initial_tokens,
+                seed_context=seed_context,
+            )
+
         combined_packs = "\n\n".join(branch_evidence_packs.values())
         eval_instruction = (
             "GRAPH_TOT_EVAL_TASK\n"
@@ -400,9 +435,21 @@ class GraphToTEngine:
                 )
 
         # =====================================================================
-        # PHASE 4: COMPACT & SYNTHESIZE + DETERMINISTIC GROUNDING AUDIT
+        # PHASE 4: COMPACT & SYNTHESIZE + DETERMINISTIC GROUNDING AUDIT (ToG-2 Full-Passage Fix)
         # =====================================================================
         winner_pack = branch_evidence_packs.get(winner.branch_id, seed_context) if winner else seed_context
+        winner_chunks_seen = set(winner.supporting_chunks) if winner else set()
+        extra_global_ev_lines = [
+            f"- [{ev.chunk_id} | {ev.source}]: {ev.text}"
+            for ev in evidences[:5]
+            if ev.chunk_id not in winner_chunks_seen
+        ][:3]
+        extra_ev_block = (
+            "Additional Grounded Source Passages (from PPR/RRF retrieval):\n"
+            + "\n".join(extra_global_ev_lines)
+            if extra_global_ev_lines
+            else ""
+        )
         pruned_block = (
             "Pruned Competing Hypotheses (L2 Folded Counter-Evidences):\n"
             + "\n".join(f"- {line}" for line in pruned_memories)
@@ -410,7 +457,13 @@ class GraphToTEngine:
             else ""
         )
         synth_context = "\n\n".join(
-            s for s in (f"WINNING BRANCH ({winner.branch_id if winner else 'N/A'}):\n{winner_pack}", pruned_block) if s
+            s
+            for s in (
+                f"WINNING BRANCH ({winner.branch_id if winner else 'N/A'}):\n{winner_pack}",
+                extra_ev_block,
+                pruned_block,
+            )
+            if s
         )
         compacted_synth_tokens = estimate_tokens(synth_context)
 
@@ -582,14 +635,15 @@ class GraphToTEngine:
 
         ev_lines = []
         raw_texts = []
-        for ev in branch_evidences[:2]:
+        # Stage 3.2 ToG-2 fix: remove destructive 220-char truncation; preserve complete key sentences
+        for ev in branch_evidences[:3]:
             raw_texts.append(ev.text)
-            if self.enable_compact:
+            if self.enable_compact and len(ev.text) > 900:
                 snippet = self.compactor._extract_key_sentences(
-                    ev.text, anchor_terms=q_terms, max_sentences=2
-                )[:220]
+                    ev.text, anchor_terms=q_terms, max_sentences=4
+                )
             else:
-                snippet = ev.text[:220]
+                snippet = ev.text.strip()
             ev_lines.append(f"  - [{ev.chunk_id}]: {snippet}")
 
         pack = (
@@ -601,3 +655,207 @@ class GraphToTEngine:
             + ("\n".join(ev_lines) if ev_lines else "  - (none)")
         )
         return pack, " ".join(raw_texts)
+
+    def _execute_additive_synthesis(
+        self,
+        *,
+        question: str,
+        initial_entities: list[Entity],
+        initial_evidences: list[EvidenceItem],
+        communities: list[Community],
+        grounded_branches: list[ThoughtBranch],
+        branch_evidence_packs: dict[str, str],
+        union_entities: dict[str, Entity],
+        union_relations: dict[str, Relation],
+        union_evidences: dict[str, EvidenceItem],
+        raw_initial_tokens: int,
+        seed_context: str,
+    ) -> tuple[ReasoningResult, list[Entity], list[Relation], list[EvidenceItem]]:
+        """Stage 3.2 Non-Pruning Multi-Branch Additive Synthesis (2 LLM calls total).
+
+        Retains ALL complementary branches above `min_branch_score` and merges their full
+        grounded evidence union with top PPR/RRF passages so multi-facet / summary queries
+        never lose complementary information.
+        """
+        ranked = sorted(grounded_branches, key=lambda b: (-b.deterministic_graph_score, b.branch_id))
+        final_branches: list[ThoughtBranch] = []
+        retained_packs: list[str] = []
+        retained_chunk_ids: list[str] = []
+
+        for rank, br in enumerate(ranked):
+            keep = rank == 0 or br.deterministic_graph_score >= self.min_branch_score
+            if keep:
+                kept_br = br.model_copy(
+                    update={
+                        "status": "selected",
+                        "semantic_score": br.deterministic_graph_score,
+                        "score": br.deterministic_graph_score,
+                        "prune_reason": "",
+                    }
+                )
+                final_branches.append(kept_br)
+                if br.branch_id in branch_evidence_packs:
+                    retained_packs.append(branch_evidence_packs[br.branch_id])
+                retained_chunk_ids.extend(br.supporting_chunks)
+            else:
+                final_branches.append(
+                    br.model_copy(
+                        update={
+                            "status": "pruned",
+                            "prune_reason": (
+                                f"图谱支持度 ({br.deterministic_graph_score:.2f}) "
+                                f"低于多分支聚合阈值 ({self.min_branch_score:.2f})。"
+                            ),
+                        }
+                    )
+                )
+
+        # Merge full union of top global PPR/RRF passages + branch-discovered passages (lossless!)
+        seen_cids: set[str] = set()
+        merged_ev_lines: list[str] = []
+        # Prioritize initial top RRF/PPR passages first, then unique branch passages
+        ordered_evs: list[EvidenceItem] = [*initial_evidences[:6]]
+        for cid in retained_chunk_ids:
+            if cid in union_evidences:
+                ordered_evs.append(union_evidences[cid])
+        for ev in ordered_evs:
+            if ev.chunk_id in seen_cids:
+                continue
+            seen_cids.add(ev.chunk_id)
+            merged_ev_lines.append(f"- [{ev.chunk_id} | {ev.source} | via={ev.matched_via}]: {ev.text}")
+            if len(merged_ev_lines) >= 8:
+                break
+
+        comm_block = (
+            "Community Summaries:\n"
+            + "\n".join(f"- [{c.title}] {c.summary[:220]}" for c in communities[:3])
+            if communities
+            else ""
+        )
+        branches_block = (
+            "Complementary Facet Branches (All Retained — Non-Pruning Union):\n"
+            + "\n\n".join(retained_packs)
+            if retained_packs
+            else seed_context
+        )
+        evidences_block = (
+            "Full Deduplicated Source Passages (Union of PPR/RRF + All Branches):\n"
+            + "\n".join(merged_ev_lines)
+            if merged_ev_lines
+            else ""
+        )
+
+        # Keep concise graph overview + full deduplicated passages within context budget
+        synth_context = "\n\n".join(s for s in (branches_block, comm_block, evidences_block) if s)
+        # If total exceeds compactor budget, drop only excess redundant branch lines, never full passages
+        if estimate_tokens(synth_context) > self.compactor.max_context_tokens + 1200:
+            compact_branch_summary = "\n".join(
+                f"- [{b.branch_id}] {b.hypothesis} (target={b.target_entity_name}, "
+                f"rels={b.supporting_relations[:4]}, chunks={b.supporting_chunks[:3]})"
+                for b in final_branches
+                if b.status == "selected"
+            )
+            synth_context = "\n\n".join(
+                s
+                for s in (
+                    "Retained Facet Branches:\n" + compact_branch_summary,
+                    comm_block,
+                    evidences_block,
+                )
+                if s
+            )
+
+        compacted_synth_tokens = estimate_tokens(synth_context)
+
+        synth_instruction = (
+            "GRAPH_MULTI_BRANCH_SYNTH_TASK\n"
+            "Synthesize a comprehensive, accurate, grounded answer in the EXACT SAME LANGUAGE "
+            "as the question by integrating ALL complementary facts across ALL retained branches "
+            "and source passages above. Do NOT omit secondary factors or details present in the "
+            "passages. Cite ONLY exact entity_ids, relation_ids, and chunk_ids present above.\n"
+            "Return strict JSON:\n"
+            '{"selected_branch_id": "ALL_RETAINED", '
+            '"steps": [{"step_id": 1, "stage": "anchor|graph_traverse|evidence_check|synthesis", '
+            '"claim": "<grounded facet synthesis>", "cited_entity_ids": ["ent_..."], '
+            '"cited_relation_ids": ["rel_..."], "cited_chunk_ids": ["doc_...::chunk_..."]}], '
+            '"excluded_summary": [], '
+            '"final_answer": "<thorough yet focused answer integrating all grounded evidence>", '
+            '"confidence": 0.9}'
+        )
+        synth_prompt = LLMHarness.compile_prompt(
+            context_text=synth_context,
+            question=question,
+            task_instruction=synth_instruction,
+        )
+
+        synth_out: ToTSynthesisOutput | None = None
+        if self.harness.ledger.total_calls < self.harness.max_calls:
+            try:
+                synth_out, _ = self.harness.run_structured(
+                    synth_prompt,
+                    ToTSynthesisOutput,
+                    step_name="graph_multi_branch_synthesize",
+                    system_prompt=TOT_SYSTEM_PROMPT,
+                    temperature=self.temperature,
+                    max_tokens=1536,
+                )
+            except ValueError:
+                synth_out = None
+
+        all_union_ents = list(union_entities.values())
+        all_union_rels = list(union_relations.values())
+        all_union_evs = list(union_evidences.values())
+
+        if synth_out is not None:
+            audited_steps, audit = audit_cot_grounding(
+                synth_out.steps,
+                entities=all_union_ents,
+                relations=all_union_rels,
+                evidences=all_union_evs,
+            )
+            final_answer = synth_out.final_answer
+            confidence = synth_out.confidence
+        else:
+            audited_steps, audit = audit_cot_grounding(
+                [],
+                entities=all_union_ents,
+                relations=all_union_rels,
+                evidences=all_union_evs,
+            )
+            facets = "; ".join(b.hypothesis for b in final_branches if b.status == "selected")
+            final_answer = f"[Multi-Branch Fallback] Retained facets: {facets}"
+            confidence = 0.6
+
+        ratio = round(max(0.0, 1.0 - compacted_synth_tokens / max(raw_initial_tokens, 1)), 4)
+        kept_cnt = sum(1 for b in final_branches if b.status == "selected")
+        compaction_meta: dict[str, object] = {
+            "raw_tokens_est": raw_initial_tokens,
+            "compacted_tokens_est": compacted_synth_tokens,
+            "compression_ratio": ratio,
+            "raw_entity_count": len(all_union_ents),
+            "kept_entity_count": kept_cnt,
+            "raw_relation_count": len(all_union_rels),
+            "kept_relation_count": sum(
+                len(b.supporting_relations) for b in final_branches if b.status == "selected"
+            ),
+            "dropped_nodes": max(0, len(all_union_ents) - len(initial_entities)),
+            "applied_levels": [
+                "L0_multi_branch_union",
+                "L1_full_passage_preservation",
+            ],
+        }
+
+        result = ReasoningResult(
+            question=question,
+            paradigm="multi_branch",
+            anchor_entities=[b.target_entity_id for b in final_branches if b.target_entity_id],
+            final_answer=final_answer,
+            confidence=confidence,
+            steps=audited_steps,
+            branches=final_branches,
+            pruned_memories=[],
+            grounding_audit=audit,
+            compaction=compaction_meta,
+            trace_ledger=self.harness.ledger.summary(),
+        )
+        return result, all_union_ents, all_union_rels, all_union_evs

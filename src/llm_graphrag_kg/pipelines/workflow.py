@@ -22,6 +22,7 @@ from llm_graphrag_kg.pipelines.ingestion import DocumentIngestor
 from llm_graphrag_kg.pipelines.retriever import GraphRAGRetriever
 from llm_graphrag_kg.providers.factory import (
     create_embedding_client,
+    create_fast_llm_client,
     create_graph_store,
     create_llm_client,
     create_vector_store,
@@ -36,12 +37,14 @@ class GraphRAGPipeline:
         config: AppConfig,
         *,
         llm: BaseLLMClient | None = None,
+        planner_llm: BaseLLMClient | None = None,
         embedder: BaseEmbeddingClient | None = None,
         graph_store: BaseGraphStore | None = None,
         vector_store: BaseVectorStore | None = None,
     ) -> None:
         self.config = config
         self.llm = llm or create_llm_client(config)
+        self.planner_llm = planner_llm if planner_llm is not None else create_fast_llm_client(config)
         self.embedder = embedder or create_embedding_client(config)
         self.graph_store = graph_store or create_graph_store()
         self.vector_store = vector_store or create_vector_store()
@@ -186,6 +189,17 @@ class GraphRAGPipeline:
             max_calls=self.config.harness.max_calls,
             max_wall_seconds=self.config.harness.max_wall_seconds,
         )
+        planner_harness = (
+            LLMHarness(
+                self.planner_llm,
+                compactor=compactor,
+                json_repair_retries=self.config.harness.json_repair_retries,
+                max_calls=self.config.harness.max_calls,
+                max_wall_seconds=self.config.harness.max_wall_seconds,
+            )
+            if self.planner_llm is not None
+            else None
+        )
         retriever = GraphRAGRetriever(
             llm=self.llm,
             embedder=self.embedder,
@@ -199,9 +213,13 @@ class GraphRAGPipeline:
             enable_compact=use_compact,
             compactor=compactor,
             harness=harness,
+            planner_harness=planner_harness,
             tot_beam_width=self.config.reasoning.tot_beam_width,
             tot_max_depth=self.config.reasoning.tot_max_depth,
             tot_max_llm_calls=self.config.reasoning.tot_max_llm_calls,
+            enable_early_stop=self.config.reasoning.enable_early_stop,
+            early_stop_coverage_threshold=self.config.reasoning.early_stop_coverage_threshold,
+            multi_branch_min_score=self.config.reasoning.multi_branch_min_score,
             semantic_index=self.semantic_index,
             enable_hybrid_bm25=self.config.retrieval.enable_hybrid_bm25,
             hybrid_bm25_weight=self.config.retrieval.hybrid_bm25_weight,

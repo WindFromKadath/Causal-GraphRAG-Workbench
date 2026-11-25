@@ -196,3 +196,115 @@ def test_streamlit_workbench_headless_render() -> None:
     assert at.sidebar.selectbox[0].value == "configs/failuresensoriq.yaml"
     assert len(at.tabs) == 6
 
+
+def test_tot_tree_exporter_builds_interactive_html_for_tot_and_cot(tmp_path: Path) -> None:
+    from llm_graphrag_kg.config import AppConfig
+    from llm_graphrag_kg.pipelines.workflow import GraphRAGPipeline
+    from llm_graphrag_kg.providers.embedding.local_hash import LocalHashEmbeddingClient
+    from llm_graphrag_kg.providers.llm.mock import MockLLMClient
+    from llm_graphrag_kg.viz.tot_tree_exporter import build_tot_tree_payload, export_tot_tree_html
+
+    in_dir = tmp_path / "docs"
+    st_dir = tmp_path / "storage"
+    in_dir.mkdir()
+    (in_dir / "pump_case.md").write_text(
+        "# 离心泵故障诊断\n\n"
+        "离心泵机组出现2倍频振动升高、轴承温升异常与电机定子电流波动时，优先排查轴系不对中并执行激光对中SOP。\n"
+        "滚动轴承外圈剥落通常伴随高频冲击信号。\n",
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig(project_root=tmp_path)
+    pipeline = GraphRAGPipeline(
+        cfg,
+        llm=MockLLMClient(),
+        embedder=LocalHashEmbeddingClient(),
+    )
+    pipeline.build(in_dir, storage_dir=st_dir)
+
+    tot_res = pipeline.query(
+        "离心泵2倍频振动升高和电流波动优先排查什么？",
+        mode="ppr",
+        reasoning="tot",
+        auto_load=False,
+    )
+    payload = build_tot_tree_payload(tot_res, pipeline.graph_store, pipeline.vector_store)
+    assert payload["paradigm"] == "tot"
+    assert len(payload["branches"]) >= 1
+    assert any(b["status"] == "selected" for b in payload["branches"])
+    assert len(payload["chunks"]) >= 1
+    # Verify Node -> Edge -> Node traversal waves and final core convergence stats
+    trav = payload["traversal"]
+    assert len(trav["nodes"]) >= 1
+    assert trav["nodes"][0]["read_order"] == 1
+    assert trav["stats"]["used_nodes"] >= 1
+    assert trav["stats"]["used_nodes"] <= trav["stats"]["total_read_nodes"]
+
+    out_html = export_tot_tree_html(
+        tot_res,
+        pipeline.graph_store,
+        tmp_path / "tot_reasoning_tree.html",
+        vector_store=pipeline.vector_store,
+    )
+    html_text = out_html.read_text(encoding="utf-8")
+    assert "基于思维树的透明推理与因果链条解析" in html_text
+    assert "drawTreeLines" in html_text
+    assert "drawHopEdges" in html_text
+    assert "仅保留最终用到的一片核心 Node" in html_text
+    assert "https://" not in html_text  # Strictly zero external CDN dependencies
+
+    # Verify graceful single-branch fallback on CoT mode
+    cot_res = pipeline.query(
+        "离心泵2倍频振动升高原因？",
+        mode="ppr",
+        reasoning="cot",
+        auto_load=False,
+    )
+    cot_payload = build_tot_tree_payload(cot_res, pipeline.graph_store, pipeline.vector_store)
+    assert cot_payload["paradigm"] == "cot"
+    assert len(cot_payload["branches"]) == 1
+    assert cot_payload["branches"][0]["status"] == "selected"
+
+
+def test_workbench_discovers_medical_and_novel_configs_and_auto_detects_embedder(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("streamlit")
+    import json
+
+    import numpy as np
+
+    from llm_graphrag_kg.viz.app import (
+        _detect_storage_embedding_profile,
+        _discover_config_files,
+    )
+
+    cfgs = _discover_config_files()
+    assert cfgs[0] == "configs/failuresensoriq.yaml"
+    assert "configs/graphrag_bench_medical.yaml" in cfgs
+    assert "configs/graphrag_bench_novel.yaml" in cfgs
+
+    # 1. Stage 3.1 storage with manifest embedding metadata
+    s31 = tmp_path / "s31"
+    s31.mkdir()
+    (s31 / "manifest.json").write_text(
+        json.dumps(
+            {
+                "embedding_provider": "ollama_native",
+                "embedding_model": "nomic-embed-text",
+                "synonym_edges_added": 236,
+            }
+        ),
+        encoding="utf-8",
+    )
+    np.save(s31 / "embeddings.npy", np.zeros((3, 768), dtype=np.float32))
+    prov, model, dim, _ = _detect_storage_embedding_profile(s31)
+    assert (prov, model, dim) == ("ollama_native", "nomic-embed-text", 768)
+
+    # 2. Legacy 256-dim storage without embedding fields in manifest
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    np.save(legacy / "embeddings.npy", np.zeros((2, 256), dtype=np.float32))
+    prov2, model2, dim2, _ = _detect_storage_embedding_profile(legacy)
+    assert (prov2, model2, dim2) == ("local_hash", "local_hash", 256)
+

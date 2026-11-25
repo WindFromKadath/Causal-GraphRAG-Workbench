@@ -7,8 +7,10 @@
 - **分层解耦架构（Migration-Ready）**：核心管线仅依赖 `Protocol` 抽象接口，默认零外部数据库依赖（`NetworkX` + 本地向量存储），后续可平滑替换至 Neo4j / 专用向量库。
 - **多模型兼容**：统一采用 OpenAI-compatible 协议与 Ollama 原生控制接口，通过 `.env` 一键切换云端大模型 API、本机 Ollama / vLLM / LM Studio 等本地模型服务，亦内置离线 `mock` 模式用于零成本调试与自动化测试。
 - **可视化内容核验**：
-  - Phase 1：自动生成图谱质量审计报告（Markdown/CSV）、标准 `.graphml`（兼容 Gephi/Cytoscape）、以及 `PyVis` 单文件交互式 HTML 图谱（支持悬停原文溯源与**问答检索子图高亮**）。
-  - Phase 2：基于 `Streamlit` 的一站式本地可视化核验工作台（同屏查看文档切片、过滤实体/三元组并反查原文、社区总览、实时提问与检索子图联动高亮）。
+  - Phase 1：自动生成图谱质量审计报告（Markdown/CSV）、标准 `.graphml`（兼容 Gephi/Cytoscape）、`PyVis` 单文件交互式 HTML 图谱（支持悬停原文溯源与**问答检索子图高亮**），以及**零 CDN 离线交互式 Node→Edge→Node 逐跳回放与思维树因果解析页**（`--export-tot-html`）。
+  - Phase 2：基于 `Streamlit` 的一站式本地可视化核验工作台（内置工业故障诊断、IBM FailureSensorIQ、GraphRAG-Bench Medical & Novel 多数据集无缝切换与嵌入维度自动对齐，同屏查看文档切片、SHACL-lite 合规审计、实时提问与思维链/思维树回放）。
+- **显性推理与自适应路由（Stage 2.2 → 3.2+）**：
+  - 支持 `direct`、`cot`（单轮结构化）、`cot_iter`（论文完整版多轮 KG 工具循环 Graph-CoT v2）、`tot`（Depth-1 互斥剪枝）、`multi_branch`（非剪枝多分支并集聚合）、`auto`（零开销自适应三路路由 + 动态早停），以及 `tot_bfs` / `tot_dfs`（论文完整版多深度图边搜索 + DFS 真实回溯），并支持 `--fast-model` 双模型分层调度。
 - **隐私与项目管理规范**：
   - 严格隔离代码、配置、脱敏示例数据（`data/sample/`）与私有运行数据（`data/private/`、`storage/`、`outputs/`）。
   - 每次 Git 提交前自动执行隐私与修改日志（`CHANGELOG.md`）检查。
@@ -20,9 +22,11 @@ LLM-GraphRAG-KG/
 ├── .env.example                 # 环境变量模板（复制为 .env 后填入实际配置）
 ├── CHANGELOG.md                 # 修改日志（每次 Git 提交同步更新）
 ├── configs/
-│   ├── default.yaml             # 通用默认运行参数
-│   ├── fault_diagnosis.yaml     # 工业工程部署与故障诊断领域本体配置
-│   └── failuresensoriq.yaml     # IBM FailureSensorIQ（Apache-2.0）标准数据集配置
+│   ├── default.yaml                 # 通用默认运行参数
+│   ├── fault_diagnosis.yaml         # 工业工程部署与故障诊断领域本体配置
+│   ├── failuresensoriq.yaml         # IBM FailureSensorIQ（Apache-2.0）标准数据集配置
+│   ├── graphrag_bench_medical.yaml  # GraphRAG-Bench Medical 医学多跳数据集（Stage 3.1 稠密+HippoRAG 2）
+│   └── graphrag_bench_novel.yaml    # GraphRAG-Bench Novel 长篇叙事数据集（Stage 3.1 稠密+HippoRAG 2）
 ├── data/
 │   ├── sample/                  # 轻量基础演示语料（3 篇）
 │   └── sample_fault_diagnosis/  # 工程部署与工业故障诊断脱敏语料（6 篇，含多跳因果链）
@@ -59,8 +63,11 @@ uv run llm-graphrag-kg build --input data/sample --provider mock
 uv run llm-graphrag-kg audit
 uv run llm-graphrag-kg export-viz
 
-# 6. 执行 GraphRAG 问答并导出带检索子图高亮的交互式核验网页
-uv run llm-graphrag-kg query "GraphRAG 如何结合知识图谱解决多跳推理问题？" --mode hybrid --provider mock --export-html
+# 6. 执行 GraphRAG 问答并导出检索子图 / Node→Edge→Node 思维树交互展示页
+uv run llm-graphrag-kg query "电机轴承温度异常升高且伴随2倍频振动升高，有哪些可能原因及排查措施？" --config-file configs/fault_diagnosis.yaml --mode ppr --reasoning tot_dfs --export-tot-html
+
+# 6b. 体验论文完整版迭代 CoT / 多深度 ToT（>=12 GB 显存或云端 API 可加 --fast-model qwen3.5:4b）
+uv run llm-graphrag-kg query "GraphRAG 如何结合知识图谱解决多跳推理问题？" --mode ppr --reasoning auto --provider mock --export-html
 
 # 7. 启动 Phase 2 Streamlit 一站式可视化核验工作台
 uv sync --extra viz --extra dev

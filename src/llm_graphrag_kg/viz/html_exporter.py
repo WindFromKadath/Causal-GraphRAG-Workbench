@@ -31,6 +31,18 @@ TYPE_PALETTE: dict[str, str] = {
     "DeploymentComponent": "#06B6D4",
     "RemediationSOP": "#22C55E",
     "Standard": "#EAB308",
+    # GraphRAG-Bench Medical & Novel ontology types
+    "DiseaseConcept": "#EF4444",
+    "Disease": "#DC2626",
+    "RiskFactor": "#F59E0B",
+    "DiagnosticTest": "#06B6D4",
+    "Treatment": "#10B981",
+    "Anatomy": "#8B5CF6",
+    "Biomarker": "#EC4899",
+    "Guideline": "#3B82F6",
+    "NarrativeEntity": "#6366F1",
+    "Location": "#14B8A6",
+    "Event": "#F97316",
 }
 
 COMMUNITY_PALETTE: list[str] = [

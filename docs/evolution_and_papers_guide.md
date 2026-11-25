@@ -18,9 +18,10 @@ flowchart LR
     S24["Stage 2.4: 大图可视化治理<br/>Ego-Graph + W3C SHACL-lite<br/>(去毛线球 & 全图本体合规质检)"]
     S30["Stage 3.0: 本地算力底座定型<br/>Qwen3.5 Hybrid Attention + num_gpu<br/>(打穿 8GB 显存延迟瓶颈)"]
     S31["Stage 3.1: 下一代检索底座<br/>BM25+Dense RRF + HippoRAG 2<br/>(打穿假向量召回天花板)"]
-    S3N["Stage 3.2–3.4 (规划中)<br/>自适应路由 + LLM-Judge<br/>+ HyperGraph + A-MEM 记忆"]
+    S32["Stage 3.2 & v2 论文级基线<br/>路由+并集聚合+迭代CoT+多深度ToT<br/>(4b vs 9b 中间层双模型消融)"]
+    S3N["Stage 3.3–3.4 (规划中)<br/>LLM-Judge + 语义OpenIE<br/>+ HyperGraph + A-MEM 记忆"]
 
-    S1 --> S21 --> S22 --> S23 --> S24 --> S30 --> S31 --> S3N
+    S1 --> S21 --> S22 --> S23 --> S24 --> S30 --> S31 --> S32 --> S3N
 ```
 
 ---
@@ -37,7 +38,8 @@ flowchart LR
 | **Stage 2.4** | 已完成 | 6 标签页工作台锁定 `failuresensoriq` + **Ego-Graph** + 可读回放 + **SHACL-lite** | **W3C SHACL** *(语义网约束标准)* + **Ego-Network 可视化治理** | >200 节点毛线球难读；哈希 ID 不可读；缺全图自动化质检门禁 | 单设备降噪 `-82%~-88%`；可读思维卡片；全图 SHACL-lite **8/8 100% PASS** |
 | **Stage 3.0** | 已完成 | 主力底座升级 `qwen3.5:9b` + `GRAPHRAG_LLM_NUM_GPU=99` + 4k–128k 显存建模 | **Qwen 3.5 Hybrid Attention**（低 KV 斜率）与消费级显存治理 | `gemma4:12b` 权重超 8 GB 显存被迫 CPU 混合卸载，`ppr_tot` 慢至 `52s` | `ppr_tot` 暴速 **3.2×–3.5×**（`52s → 15–16s`）；双域 `ppr_cot` 反超 `naive_rag` 登顶 |
 | **Stage 3.1** | 已完成 | Ollama 原生稠密嵌入（SQLite 缓存）+ 双语 **BM25 + Dense RRF** + **HippoRAG 2** | **HippoRAG 2** *(ICML 2025)* + **Okapi BM25** & **RRF** *(SIGIR 2009)* | `local_hash` 假向量无法识别跨词语义，锁死开放语料召回上限 | Medical `Ret EvRec` 达 **79.8%**（≥75% PASS），Novel 达 **72.4%**（≥65% PASS） |
-| **Stage 3.2** | 规划中 | 自适应任务路由器 + 非剪枝多分支聚合 + 取消 `tot.py` 截断 + 动态早停 | **When to use Graphs in RAG** + **OpenSPG KAG** + **ToG-2** + **Search-R1** | `ppr_tot` 单胜剪枝导致多面摘要“高召回、低覆盖”剪刀差 | 目标：消除摘要剪刀差，将 79.8% 召回红利转化为生成质量全面第 1，延迟再降 ≥40% |
+| **Stage 3.2** | 已完成 | 自适应任务路由器 + 非剪枝多分支聚合 + 取消 `tot.py` 截断 + 动态早停 | **When to use Graphs in RAG** + **OpenSPG KAG** + **ToG-2** + **Search-R1** | `ppr_tot` 单胜剪枝 + 220 截断导致多面摘要“高召回、低覆盖”剪刀差 | 摘要覆盖率暴涨 `+36.5~+43.2pp`；双域 Complex F1 达 `41.9%/29.6%` 第 1；延迟较 S2 降 **-63.6%**，`multi_branch` **100% 溯源** |
+| **Stage 3.2+ (v2 基线)** | 已完成 | 论文完整版迭代 `Graph-CoT v2`（`cot_iter`）+ 多深度 `Graph-ToT v2`（`tot_bfs`/`tot_dfs` 真回溯）+ `4b vs 9b` 双模型分层消融 | **Graph-CoT** *(ACL 2024)* + **PoG** *(AAAI 2025)* + **ToT** *(NeurIPS 2023)* + **ToG/ToG-2** *(ICLR 2024/2025)* | 旧 CoT 为单轮结构化生成、旧 ToT 为 Depth-1 扁平展开无真回溯；需量化轻重双模型分工边界 | 同 10 题：`cot_iter` F1 达 **`44.7%`（+8.7pp）**；`tot_bfs/dfs` 检索召回飙至 **`86.7%`**、`tot_dfs` F1 **`41.3%`（+9.9pp）** 触发真回溯 `8/10` 题；量化出 `4b` 净算力快 `15%–24%` 但 8 GB 单卡换模税 `+7.1~11.2s` 的硬件边界 |
 | **Stage 3.3** | 规划中 | 官方口径四维 **LLM-as-a-Judge** + 语义 OpenIE + 工业 OREDA `FMEA_KG.ttl` 导入 | **GraphRAG-Bench Eval** + **IndustryAssetEQA** *(ACL 2026)* | 纯 `Token-F1` 易被 0% 召回短拒答欺骗；共现边缺乏语义方向 | 目标：建立无拒答失真的语义评测标尺，打通标准化工业 RDF/Turtle 知识导入 |
 | **Stage 3.4** | 规划中 | 轻量 **HyperGraph** 多条件超边 + 验证后自演化记忆写回 + 工作台联动 | **HyperGraphRAG** *(NeurIPS 2025)* + **A-MEM** *(NeurIPS 2025)* | 二元边难表达“多症状联合推出单根因”；历史正确排障经验无法沉淀 | 目标：支持 N 元联合因果推理，并建立经 Grounding+NLI 门禁过滤的无投毒记忆写回 |
 
@@ -200,14 +202,57 @@ flowchart LR
 
 ---
 
-## 4. 下一阶段预告卡片（Stage 3.2 ~ 3.4 待落地）
+### Stage 3.2：自适应任务路由 + 非剪枝多分支聚合 + ToG-2 无损保留与动态早停
+- **升级前痛点（Why）**：
+  - Stage 3.1 虽然已将双域检索证据召回率推至 `79.8%`（Medical）与 `72.4%`（Novel），但 `ppr_tot` 回答覆盖率仍停留在 `27.1% / 32.1%`，出现严重的**“检索-生成剪刀差”**。
+  - 逐行法证定位到两处根因：① `tot.py` Phase 4 强制仅保留 Rank 0 胜出分支的 2 条切片并做 `[:220]` 字符硬截断，等于把 440 字符以外的 80% 检索证据全扔了；② 对多面综述题（`Contextual Summarize`）强行套用“互斥单胜剪枝”会系统性删掉互补维度。
+- **参考论文与范式（Paper & Paradigm）**：
+  - **GraphRAG-Bench (*When to use Graphs in RAG*, ICLR)** & **OpenSPG KAG**：核心洞见是不同题型需要差异化图谱推理路径——单跳事实无需重搜索，互斥排障适合剪枝，全局/多面综合必须做无损并集聚合。
+  - **ToG-2** (*Think-on-Graph 2.0*, [`DataArcTech/ToG-2`](https://github.com/DataArcTech/ToG-2))：强调知识图谱结构与完整原文切片（Full Passage）必须**双向无损保留**，避免图谱抽取或硬截断造成上下文细节丢失。
+  - **Search-R1 / RAG-R1**（自适应推理步数控制思想）：当首跳检索已经高置信覆盖查询核心概念时动态早停（Dynamic Early Stopping），避免简单题空耗多轮调用。
+- **本项目源码落点（Code Map）**：
+  - 自适应路由器：`src/llm_graphrag_kg/reasoning/router.py`（`route_query` / `compute_first_hop_coverage` / `RouteDecision`）
+  - 非剪枝多分支聚合与 ToG-2 截断修复：`src/llm_graphrag_kg/reasoning/tot.py`（`synthesis_mode="additive"` + 移除 `[:220]` 截断 + 补充全局 PPR/RRF 原文切片）
+  - 全链路接入与测试：`pipelines/retriever.py`、`workflow.py`、`adapters/graphrag_bench.py`、`cli.py`、`viz/app.py`、`tests/test_stage3_2_router_multibranch.py`
+- **升级优势（Evidence）**：
+  - **`Contextual Summarize` 剪刀差彻底反转**：Medical 回答覆盖率从 `18.7%` 跃升至 **`60.5%–61.9%`（+43.2pp）**，`multi_branch` Token-F1 以 **`39.9%`** 反超 Dense `naive_rag`（`39.6%`）；Novel `ppr_auto` 以 **Token-F1 `31.1%` / 覆盖率 `59.2%`** 双项领先 `naive_rag`（`27.8% / 54.2%`）。
+  - **`Complex Reasoning` 双域登顶**：仅取消 220 截断与补充全局切片，`ppr_tot` 在 Medical 跃升至 **`41.9%`**（+5.5pp vs `naive_rag`）、Novel 跃升至 **`29.6%`**（+5.4pp vs `naive_rag`），ROUGE-L 双域第 1。
+  - **零幻觉与高效率**：`multi_branch` 仅需 `2.0` 次调用，双域 **50/50 题 Grounding `100.0%`**，平均耗时 **`18.8s–19.0s`**（较 Stage 2 ToT `52s` 下降 **`-63.6%`**，远超 ≥40% 验收门槛）。
+- **学习要点（Takeaway）**：
+  - **“剪枝”只属于互斥排障，“并集聚合”才属于多面综述**——把这两种截然相反的认知操作解耦并交由自适应路由器分发，再配以 ToG-2 完整原文保留，才能把底层图谱召回优势真正兑现成最终回答质量。
+
+---
+
+### Stage 3.2+ 基线深化：论文完整版 `Graph-CoT v2` & 多深度 `Graph-ToT v2 (BFS/DFS)` + `4b vs 9b` 中间层消融（当前最新已完成）
+- **升级前痛点（Why）**：
+  - 对标原论文核查发现，Stage 2.2/2.3 的初版基线属于“工程简化版”：① 初版 `Graph-CoT` 为单轮 JSON 生成，缺少 `Thought → Graph-Action → Observation` 真正的多轮图谱交互工具循环；② 初版 `Graph-ToT` 仅在 Depth-1 扁平生成 3 个分支并做 1 次横向剪枝，缺少论文中的多深度真实图边扩展（Depth 1→2）、离散状态评估（`sure / likely / impossible`）以及 **BFS 束搜索** / **DFS 深度探索 + 死胡同真实回溯（Backtracking）**。
+  - 同时，引入多轮中间规划与分支评估后，必须验证“轻量模型（`qwen3.5:4b`）做中间层 + 主力模型（`qwen3.5:9b`）做最终综合”与“全链路统一 `9b`”在质量、搜索行为与 8 GB 显存真实延迟上的量化差异。
+- **参考论文与范式（Paper & Paradigm）**：
+  - **Graph-CoT** (*Graph Chain-of-Thought*, Jin et al., **ACL 2024**) & **PoG** (*Plan-on-Graph*, Chen et al., **AAAI 2025**)：真正的多轮 KG 交互工具循环（`RetrieveNode` / `InspectEntity` / `ExpandNeighbors` / `FetchChunk` / `Finish`），当动作参数缺失或未命中时触发 `[SELF-CORRECT]` 纠错反馈，按需主动补拉图谱邻域与原文块。
+  - **ToT** (*Tree of Thoughts*, Yao et al., **NeurIPS 2023**) & **ToG / ToG-2** (*Think-on-Graph*, Sun et al., **ICLR 2024 / 2025**)：真实多跳沿图边扩展前沿（Depth `1 → 2`）+ 离散状态估值（`sure` 早停 / `likely` 扩展 / `impossible` 剪枝 + L2 折叠）+ 完整支持 **BFS Beam Search (`tot_bfs`)** 与 **DFS + Backtracking (`tot_dfs`)**。
+- **本项目源码落点（Code Map）**：
+  - 双模型分层配置与工厂：`src/llm_graphrag_kg/config.py`（`GRAPHRAG_LLM_FAST_MODEL` / `GRAPHRAG_LLM_FAST_NUM_CTX=8192`）、`providers/factory.py`（`create_fast_llm_client`）
+  - 论文完整版迭代 `Graph-CoT v2`：`src/llm_graphrag_kg/reasoning/cot_iterative.py`（`IterativeGraphCoTEngine`）
+  - 论文完整版多深度 `Graph-ToT v2`：`src/llm_graphrag_kg/reasoning/tot_deep.py`（`DeepGraphToTEngine`，支持 `bfs` 与 `dfs` 回溯）
+  - 全链路与可视化适配：`reasoning/schema.py`、`pipelines/retriever.py`、`adapters/graphrag_bench.py`、`cli.py`（`--fast-model`）、`viz/app.py`、`viz/tot_tree_exporter.py`（展示 `D1/D2` 深度、`verdict` 与 `↩ 回溯` 标记）、`tests/test_paper_faithful_cot_tot.py`
+- **升级优势（Evidence，GraphRAG-Bench Medical 同源 10 题分层对照，`seed=42`）**：
+  - **v1 简化版 → v2 论文完整版全面跃升（统一 `qwen3.5:9b`）**：
+    - `cot_iter`：**Token-F1 `36.0% → 44.7%`（+8.7pp，超 `naive_rag` +7.4pp）**、ROUGE-L `27.1% → 34.4%`（+7.3pp）、Ans EvCov `61.2% → 68.3%`（+7.1pp）、Grounding `94.5%`；其中 Complex Reasoning 达 **`48.1%`**、Contextual Summarize 达 **`41.3%`** 双项第 1。
+    - `tot_bfs` / `tot_dfs`：多深度真实图边扩展将 **Ret EvRec 推升至 `86.7%`（#1，超 `naive_rag` +12.1pp）**；Token-F1 从 v1.5 D1 的 `31.4%` 跃升至 **`39.1%`（`tot_bfs`，Grounding `100.0%`，`20.97s`）** 与 **`41.3%`（`tot_dfs`，+9.9pp，Ans EvCov `68.5%`，8/10 题触发真实回溯平均 `1.4` 次）**。
+  - **`qwen3.5:4b` vs `qwen3.5:9b` 中间层控制变量消融**：
+    - **质量与题型分化**：在 **Complex Reasoning** 上 `9b` 中间层跨三引擎全面胜出 `+2.4 ~ +3.6pp` F1（且 `tot_dfs` 回溯更果断：`1.4` vs `1.8` 次）；但在 **离散打分型 `tot_bfs`** 上 `4b` 中间层已反超 `9b`（F1 **`39.5%`** vs `39.1%`、ROUGE-L **`29.3%`** vs `27.4%`），且 `cot_iter (4b→9b)` 拿下全榜最高 **Ans EvCov `72.4%`** 与 `96.7%` Grounding。
+    - **8 GB 显存硬件工程律（纯算力 vs 换模税）**：剔除冷加载后，`4b` 中间层的**纯计算延迟（Net Compute）快 `14.7% ~ 24.1%`**（`cot_iter` `27.62s → 20.95s`、`tot_bfs` `20.96s → 17.86s`、`tot_dfs` `25.29s → 20.06s`）；但在 **8 GB 单卡在线交互**模式下，`4b (3.98 GiB) + 9b (6.75 GiB) > 8 GB` 触发每题双向换模冷加载税 **`+7.09s ~ +11.16s`**，反而使端到端墙钟时间慢 `1.8s ~ 4.5s`。
+- **学习要点（Takeaway）**：
+  - **让模型“按需主动查图”与“多跳回溯”不是玄学**：补齐论文级工具循环与多深度图边搜索后，两套基线均暴涨 `+7.7 ~ +9.9pp` F1，检索证据召回直接突破 `86.7%`。
+  - **双模型分层必须匹配显存拓扑**：8 GB 单卡在线交互应坚持 **`qwen3.5:9b` 单模型常驻**（零换模 + 复杂推理更稳）；仅在 **≥12–16 GB 显存双常驻、云端双 API 或离线两阶段批处理（先批量跑完 `4b` 规划，再切 `9b` 批量综合）** 时开启 `--fast-model qwen3.5:4b` 才能兑现 `15%–24%` 净加速红利。
+
+---
+
+## 4. 下一阶段预告卡片（Stage 3.3 ~ 3.4 待落地）
 
 > 详细工程设计见 [stage3_nextgen_graphrag_plan.md](stage3_nextgen_graphrag_plan.md)，完成每个子阶段后将同步回填实测数据至本手册。
 
-1. **Stage 3.2：自适应任务路由 + 非剪枝多分支聚合 + 动态早停**
-   - **参考论文/项目**：*When to use Graphs in RAG*（GraphRAG-Bench）、**OpenSPG KAG**（知识增强生成逻辑路由）、**ToG-2**（图与原文证据双向无损保留）、**Search-R1 / RAG-R1**（自适应推理步数控制）。
-   - **核心目标**：解决 Stage 3.1 实测仍存在的“ToT 召回最高（79.8%）但单胜剪枝+截断导致多面摘要覆盖率仅 27.1%”的剪刀差，实现按题型自动分流（单跳早停 / 互斥排障走 ToT 剪枝 / 多面综述走无剪枝多分支聚合）。
-2. **Stage 3.3：官方口径 LLM-as-a-Judge + 语义 OpenIE + 工业 RDF 导入**
+1. **Stage 3.3：官方口径 LLM-as-a-Judge + 语义 OpenIE + 工业 RDF 导入**
    - **参考论文/项目**：**GraphRAG-Bench Official Evaluation**（四维语义评测）、**IndustryAssetEQA**（ACL 2026，OREDA `FMEA_KG.ttl` 工业知识图谱）。
    - **核心目标**：引入 Answer Accuracy / Faithfulness / Coverage / Refusal Rate 消除纯 `Token-F1` 拒答失真；用语义谓词三元组替代无类型共现边；打通标准工业 RDF/Turtle 一键导入与 SHACL-lite 质检。
 3. **Stage 3.4：HyperGraph 多条件超边 + 验证后自演化记忆写回**

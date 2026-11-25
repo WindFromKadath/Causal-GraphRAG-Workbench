@@ -120,11 +120,17 @@ class MockLLMClient:
         max_tokens: int | None = None,
     ) -> str:
         _ = (system_prompt, temperature, max_tokens)
-        if "GRAPH_TOT_BRANCH_TASK" in prompt:
+        if "GRAPH_COT_ITER_ACTION_TASK" in prompt:
+            return self._mock_graph_cot_iter_action(prompt)
+        if "GRAPH_COT_ITER_SYNTH_TASK" in prompt:
+            return self._mock_graph_cot_iter_synth(prompt)
+        if "GRAPH_TOT_DEEP_EVAL_TASK" in prompt:
+            return self._mock_deep_tot_eval(prompt)
+        if "GRAPH_TOT_BRANCH_TASK" in prompt or "GRAPH_MULTI_BRANCH_FACET_TASK" in prompt:
             return self._mock_graph_tot_branch(prompt)
         if "GRAPH_TOT_EVAL_TASK" in prompt:
             return self._mock_graph_tot_eval(prompt)
-        if "GRAPH_TOT_SYNTH_TASK" in prompt:
+        if "GRAPH_TOT_SYNTH_TASK" in prompt or "GRAPH_MULTI_BRANCH_SYNTH_TASK" in prompt:
             return self._mock_graph_tot_synth(prompt)
         if "GRAPH_COT_TASK" in prompt:
             return self._mock_graph_cot(prompt)
@@ -228,6 +234,99 @@ class MockLLMClient:
             "提示：当前处于离线 Mock 模式，切换到 `.env` 中的 OpenAI 兼容或本机 "
             "Ollama/vLLM 模型即可获得完整语义推理回答。"
         )
+
+    @staticmethod
+    def _mock_graph_cot_iter_action(prompt: str) -> str:
+        """Deterministic multi-turn tool caller for offline Iterative Graph-CoT v2 testing."""
+        m_iter = re.search(r"Iteration\s+(\d+)/(\d+)", prompt)
+        cur_iter = int(m_iter.group(1)) if m_iter else 1
+        ent_ids = list(dict.fromkeys(re.findall(r"\[(ent_[a-z0-9]+)\]", prompt)))
+        chunk_ids = list(dict.fromkeys(re.findall(r"([a-z0-9_]+::chunk_\d+)", prompt)))
+
+        if cur_iter == 1 and ent_ids:
+            return json.dumps(
+                {
+                    "thought": f"先沿种子实体 {ent_ids[0]} 展开图谱邻居以确认多跳关联边。",
+                    "action": "ExpandNeighbors",
+                    "arg": ent_ids[0],
+                    "cited_entity_ids": [ent_ids[0]],
+                    "cited_relation_ids": [],
+                    "cited_chunk_ids": [],
+                },
+                ensure_ascii=False,
+            )
+        if cur_iter == 2 and chunk_ids:
+            return json.dumps(
+                {
+                    "thought": f"进一步读取原文切片 {chunk_ids[0]} 核实细节。",
+                    "action": "FetchChunk",
+                    "arg": chunk_ids[0],
+                    "cited_entity_ids": ent_ids[:1],
+                    "cited_relation_ids": [],
+                    "cited_chunk_ids": [chunk_ids[0]],
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "thought": "已收集足够的图谱边与原文切片，结束探索进入综合结论。",
+                "action": "Finish",
+                "arg": "evidence sufficient",
+                "cited_entity_ids": ent_ids[:2],
+                "cited_relation_ids": [],
+                "cited_chunk_ids": chunk_ids[:2],
+            },
+            ensure_ascii=False,
+        )
+
+    @staticmethod
+    def _mock_graph_cot_iter_synth(prompt: str) -> str:
+        ent_ids = list(dict.fromkeys(re.findall(r"\[(ent_[a-z0-9]+)\]", prompt)))
+        rel_ids = list(dict.fromkeys(re.findall(r"\[(rel_[a-z0-9]+)\]", prompt)))
+        chunk_ids = list(dict.fromkeys(re.findall(r"([a-z0-9_]+::chunk_\d+)", prompt)))
+        cite = f" [{', '.join(chunk_ids[:2])}]" if chunk_ids else ""
+        return json.dumps(
+            {
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "stage": "synthesis",
+                        "claim": "综合迭代图工具返回的关系边与原文切片得出最终扎根结论。",
+                        "cited_entity_ids": ent_ids[:2],
+                        "cited_relation_ids": rel_ids[:2],
+                        "cited_chunk_ids": chunk_ids[:2],
+                    }
+                ],
+                "final_answer": f"[Mock Iterative Graph-CoT v2] 已完成多轮图工具探索并收敛扎根结论{cite}。",
+                "confidence": 0.92,
+            },
+            ensure_ascii=False,
+        )
+
+    @staticmethod
+    def _mock_deep_tot_eval(prompt: str) -> str:
+        """Deterministic multi-depth ToT evaluator emitting sure/likely/impossible verdicts."""
+        cids = list(dict.fromkeys(re.findall(r"===\s*Candidate\s+([A-Za-z0-9_.]+)", prompt)))
+        m_depth = re.search(r"depth=(\d+)", prompt)
+        depth = int(m_depth.group(1)) if m_depth else 1
+        evals = []
+        for idx, cid in enumerate(cids):
+            if depth == 1:
+                verdict = "likely" if idx < 2 else "impossible"
+                score = max(0.25, round(0.82 - idx * 0.14, 2))
+            else:
+                verdict = "sure" if idx == 0 else "likely"
+                score = max(0.35, round(0.91 - idx * 0.22, 2))
+            evals.append(
+                {
+                    "candidate_id": cid,
+                    "verdict": verdict,
+                    "semantic_score": score,
+                    "hypothesis": f"Depth-{depth} 路径 {cid}",
+                    "prune_reason": "证据不足" if verdict == "impossible" else "",
+                }
+            )
+        return json.dumps({"evaluations": evals}, ensure_ascii=False)
 
     @staticmethod
     def _mock_graph_tot_branch(prompt: str) -> str:

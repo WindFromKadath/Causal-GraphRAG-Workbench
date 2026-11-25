@@ -102,6 +102,13 @@ class GRBQuestionOutcome(BaseModel):
     grounding_score: float | None = None
     tot_branches: int = 0
     tot_pruned: int = 0
+    route_taken: str = ""
+    early_stopped: bool = False
+    planner_model: str = ""
+    planner_seconds: float = 0.0
+    load_seconds: float = 0.0
+    max_depth_reached: int = 0
+    backtrack_count: int = 0
     llm_calls: int = 1
     latency_seconds: float
     prediction: str
@@ -470,6 +477,13 @@ def evaluate_graphrag_bench(
                 g_score: float | None = None
                 tot_branches = 0
                 tot_pruned = 0
+                route_taken = ""
+                early_stopped = False
+                planner_model = ""
+                planner_seconds = 0.0
+                load_seconds = 0.0
+                max_depth_reached = 0
+                backtrack_count = 0
                 llm_calls = 1
                 retrieved_text = ""
                 pred = ""
@@ -520,16 +534,35 @@ def evaluate_graphrag_bench(
                         ledger = res.metadata.get("harness_ledger", {})
                         if isinstance(ledger, dict):
                             llm_calls = int(ledger.get("total_calls", 1))
-                    elif mode == "ppr_tot":
+                    elif mode in {
+                        "ppr_tot",
+                        "ppr_multi_branch",
+                        "ppr_auto",
+                        "ppr_cot_iter",
+                        "ppr_tot_bfs",
+                        "ppr_tot_dfs",
+                    }:
+                        r_map = {
+                            "ppr_tot": "tot",
+                            "ppr_multi_branch": "multi_branch",
+                            "ppr_auto": "auto",
+                            "ppr_cot_iter": "cot_iter",
+                            "ppr_tot_bfs": "tot_bfs",
+                            "ppr_tot_dfs": "tot_dfs",
+                        }
                         res = pipeline.query(
                             qtext,
                             mode="ppr",
-                            reasoning="tot",
+                            reasoning=r_map[mode],
                             auto_load=False,
                             enable_compact=True,
                         )
                         pred = res.answer
                         retrieved_text = " ".join(ev.text for ev in res.evidences)
+                        rd = res.metadata.get("route_decision")
+                        if isinstance(rd, dict):
+                            route_taken = str(rd.get("route", ""))
+                            early_stopped = bool(rd.get("early_stop", False))
                         rm = res.metadata.get("reasoning", {})
                         if isinstance(rm, dict):
                             ga = rm.get("grounding_audit", {})
@@ -544,6 +577,15 @@ def evaluate_graphrag_bench(
                         ledger = res.metadata.get("harness_ledger", {})
                         if isinstance(ledger, dict):
                             llm_calls = int(ledger.get("total_calls", 1))
+                            planner_model = str(ledger.get("planner_model", ""))
+                            planner_seconds = float(ledger.get("planner_seconds", 0.0))
+                            load_seconds = round(
+                                float(ledger.get("planner_load_seconds", 0.0))
+                                + float(ledger.get("synth_load_seconds", 0.0)),
+                                3,
+                            )
+                            max_depth_reached = int(ledger.get("max_depth_reached", 0))
+                            backtrack_count = int(ledger.get("backtrack_count", 0))
                     else:
                         raise ValueError(f"Unsupported GraphRAG-Bench eval mode: {mode!r}")
                 except (ValueError, TimeoutError, OSError, ConnectionError) as exc:
@@ -564,6 +606,13 @@ def evaluate_graphrag_bench(
                     grounding_score=g_score,
                     tot_branches=tot_branches,
                     tot_pruned=tot_pruned,
+                    route_taken=route_taken,
+                    early_stopped=early_stopped,
+                    planner_model=planner_model,
+                    planner_seconds=planner_seconds,
+                    load_seconds=load_seconds,
+                    max_depth_reached=max_depth_reached,
+                    backtrack_count=backtrack_count,
                     llm_calls=llm_calls,
                     latency_seconds=dt,
                     prediction=pred[:500],

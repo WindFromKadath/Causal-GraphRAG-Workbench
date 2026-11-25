@@ -6,6 +6,53 @@
 
 ---
 
+## [2026-11-25] Paper-Faithful Graph-CoT v2 & Multi-Depth Graph-ToT v2 (BFS/DFS) + Dual-Model Tiering (`4b` vs `9b` Ablation)
+- **提交类型**：`feat`
+- **变更背景**：对标原论文（Graph-CoT ACL 2024 / PoG AAAI 2025 / ToT NeurIPS 2023 / ToG & ToG-2 ICLR 2024-2025），将初版简化基线（单轮 CoT 与 Depth-1 扁平 ToT）同步升级为论文完整版迭代工具循环与多深度图边搜索（支持 BFS 束搜索与 DFS 真实回溯），并建立“轻量中间层 + 主力综合层”双模型分层架构，实证对比 `qwen3.5:4b` 与 `qwen3.5:9b` 作为中间层的质量与 8 GB 显存延迟边界。
+- **主要修改**：
+  - 新增 `src/llm_graphrag_kg/reasoning/cot_iterative.py`（`IterativeGraphCoTEngine` / `cot_iter`）：实现 3 轮真实 `Thought -> RetrieveNode / InspectEntity / ExpandNeighbors / FetchChunk / Finish -> Observation` KG 工具循环、PoG `[SELF-CORRECT]` 纠错反馈、全量原文保真综合与 `GroundingAudit`。
+  - 新增 `src/llm_graphrag_kg/reasoning/tot_deep.py`（`DeepGraphToTEngine` / `tot_bfs` & `tot_dfs`）：实现 Depth `1 -> 2` 真实图边前沿扩展、ToT 离散状态评估（`sure` 早停 / `likely` 扩展 / `impossible` 剪枝 + L2 折叠）、BFS Beam Search 与 DFS 死胡同真实回溯（`backtracked=True`），并在最终综合上下文显式提供 `[ent_...]` 实体名录确保高 Grounding。
+  - 双模型分层与全链路接入：在 `config.py` 新增 `llm_fast_model` / `llm_fast_num_ctx=8192`，`providers/factory.py` 新增 `create_fast_llm_client`，扩展 `reasoning/schema.py`、`pipelines/retriever.py`、`pipelines/workflow.py`、`adapters/graphrag_bench.py`（新增 `ppr_cot_iter` / `ppr_tot_bfs` / `ppr_tot_dfs` 与 `planner_seconds`/`load_seconds`/`max_depth_reached`/`backtrack_count` 遥测）、`cli.py`（`--fast-model` 与 v2 `compaction` 兼容显示）、`viz/app.py` 及 `viz/tot_tree_exporter.py`（展示 `D1/D2` 深度、`verdict` 与 `↩ 回溯` 标记）。
+  - 新增单元测试 `tests/test_paper_faithful_cot_tot.py`，同步将 v2 基线升级与 `4b vs 9b` 消融实测结论回填至 `docs/evolution_and_papers_guide.md`。
+- **验证方式**：
+  - `ruff check src tests scripts` 0 告警，`pytest -q` **38/38** 全部通过，`scripts/privacy_check.py` 扫描通过；工业故障诊断 `tot_dfs` 真机查询与交互树导出验证 100% Grounding。
+  - `GraphRAG-Bench Medical` 同源 10 题分层对照（5 `Complex Reasoning` + 5 `Contextual Summarize`，`seed=42`，`nomic-embed-text`）：
+    - **v1 → v2 跃升（`9b` 统一）**：`cot_iter` Token-F1 `36.0% → 44.7%`（+8.7pp，超 `naive_rag` +7.4pp）、ROUGE-L `34.4%`、Grounding `94.5%`；`tot_bfs` / `tot_dfs` 检索召回飙至 **`86.7%`**（#1），`tot_bfs` Grounding **`100.0%`**（F1 `39.1%` / `20.97s`），`tot_dfs` F1 达 **`41.3%`**（+9.9pp vs v1.5 D1 ToT，8/10 题触发真实回溯平均 `1.4` 次）。
+    - **`4b` vs `9b` 中间层消融**：`Complex Reasoning` 上 `9b` 中间层跨三引擎稳赢 `+2.4 ~ +3.6pp` F1；`tot_bfs` 离散打分场景 `4b` 反超 `9b`（F1 `39.5%` vs `39.1%`，ROUGE-L `29.3%` vs `27.4%`），`cot_iter (4b→9b)` 拿下全榜最高回答覆盖率 `72.4%`；纯算力上 `4b` 快 **`14.7%–24.1%`**（Net 降 `3.1s–6.7s`），但 8 GB 单卡在线交互每题换模税达 **`+7.09s–11.16s`**，实证确立“8 GB 单卡在线选单 `9b`、≥12 GB 或两阶段批处理选 `4b→9b`”的工程决策准则。
+- **隐私与迁移自检**：消融断点与评测报告隔离在 `.gitignore` 屏蔽的 `/outputs/`，无密钥、本机绝对路径或私有数据入库。
+
+---
+
+## [2026-11-25] Stage 3.2 Adaptive Routing & Multi-Branch Synthesis - 自适应任务路由、非剪枝多分支聚合、ToG-2 截断修复与动态早停
+- **提交类型**：`feat`
+- **变更背景**：彻底根治 Stage 2/3.1 在 `GraphRAG-Bench` 上暴露的 `ppr_tot`“检索召回第一（79.8%/72.4%）但回答覆盖率暴跌（27.1%/32.1%）”剪刀差，落地 `docs/stage3_nextgen_graphrag_plan.md` 规划的 Stage 3.2。
+- **主要修改**：
+  - 新增 `src/llm_graphrag_kg/reasoning/router.py`（`route_query`、`compute_first_hop_coverage`、`RouteDecision`）：零额外 LLM 开销（`< 1ms`）实现三路自适应分流（`exclusive_diagnosis → tot`、`multi_facet_synthesis → multi_branch`、`fact_direct` 或首跳覆盖率 `>= 0.80` 动态早停 `→ cot`）。
+  - 升级 `src/llm_graphrag_kg/reasoning/tot.py`：移除 Phase 4 破坏性的 `[:220]` 字符硬截断并补充高分 PPR/RRF 全局原文切片（ToG-2 图文双向无损保留）；新增 `synthesis_mode="additive"`（`multi_branch` 非剪枝多分支并集聚合，仅需 2 次 LLM 调用，保留全部高分互补分支与去重完整原文切片并集）。
+  - 全链路接入 `config.py`（`ReasoningConfig` 早停与聚合阈值）、`reasoning/schema.py`、`providers/llm/mock.py`、`pipelines/retriever.py`、`pipelines/workflow.py`、`adapters/graphrag_bench.py`（新增 `ppr_multi_branch` 与 `ppr_auto` 评测模式及路由遥测）、`cli.py` 与 `viz/app.py`（新增 `auto` / `multi_branch` 选择与自适应路由卡片）。
+  - 新增单元测试 `tests/test_stage3_2_router_multibranch.py`，同步回填 Stage 3.2 实测验收结论与深度学习卡片至 `docs/stage3_nextgen_graphrag_plan.md` 与 `docs/evolution_and_papers_guide.md`。
+- **验证方式**：
+  - `ruff check src tests scripts` 0 告警，`pytest -q` **35/35** 全部通过，`scripts/privacy_check.py` 扫描通过。
+  - `GraphRAG-Bench` 同源双域 50 题（`seed=42`，`qwen3.5:9b` + `nomic-embed-text`）全面通过 Stage 3.2 验收门禁：
+    - **Medical (25Q)**：`ppr_auto` 全量回答覆盖率 **`68.2%`** 登顶第 1；`Contextual Summarize` 覆盖率从 `18.7%` 暴涨至 `60.5%–61.9%`（`multi_branch` F1 **`39.9%`** 第 1）；`Complex Reasoning` 修复版 `ppr_tot` F1 达 **`41.9%`**（+5.5pp vs `naive_rag`）；`multi_branch` Grounding **100.0%**，耗时 `18.84s`（较 S2 `51.8s` 降 **-63.6%**）。
+    - **Novel (25Q)**：`ppr_auto` 全量四维指标（F1 `26.4%` / EvCov `63.0%` / RetRec `72.4%`）全面反超 Dense `naive_rag`；`Contextual Summarize` F1 **`31.1%`** / EvCov **`59.2%`** 双超 `naive_rag`；`Complex Reasoning` 修复版 `ppr_tot` F1 达 **`29.6%`**（+5.4pp vs `naive_rag`）；`multi_branch` Grounding **100.0%**，耗时 `19.02s`（较 S2 `52.4s` 降 **-63.7%**）。
+- **隐私与迁移自检**：评测断点与报告严格隔离在 `.gitignore` 屏蔽的 `/outputs/`，无密钥、本机绝对路径或私有数据入库。
+
+---
+
+## [2026-11-24] Visual Showcase - 新增「基于思维树的透明推理与因果链条解析」Node→Edge→Node 逐跳读取与收敛树形交互视图
+- **提交类型**：`feat`
+- **变更背景**：响应展示与汇报需求，在原有横向 ToT 对比卡片之外，补齐真正的 **Node → Edge → Node 逐跳读取顺序回放（从向量化响应到最终仅保留用到的一片核心节点）+ 思维树分支拓扑 + 因果链条解析 + 原文切片溯源抽屉** 一体化离线展示视图。
+- **主要修改**：
+  - 扩展 `src/llm_graphrag_kg/reasoning/schema.py`（`ThoughtBranch.explored_entity_ids`）、`reasoning/tot.py` 与 `pipelines/retriever.py`（`metadata["traversal_trace"]`）：零额外 LLM 开销记录真实 Hop 0 向量/三元组响应种子、PPR 激活分及各 ToT 分支探索节点集合。
+  - 新增 `src/llm_graphrag_kg/viz/tot_tree_exporter.py`（`build_tot_tree_payload` / `render_tot_tree_html` / `export_tot_tree_html`）：零外部 CDN 依赖、100% 离线单文件 HTML，提供 **5 帧可控回放画布**（`1. 向量化响应 Hop 0` → `2. 一跳边扩散 Hop 1` → `3. 多跳深层遍历 Hop 2+` → `4. Compact & ToT 剪枝` → `5. 最终核心片收敛` + `▶ 自动播放` + `仅保留最终用到的一片核心 Node` 开关）、点击任意 Node 检视关联边与原文切片、下方联动思维树分支拓扑与 L2 折叠反证，支持深浅色切换与打印/PDF 导出。
+  - 集成至 `src/llm_graphrag_kg/viz/app.py`（「🔍 问答与思维回放」页顶部原生内嵌视图并提供一键下载 `.html`）与 `src/llm_graphrag_kg/cli.py`（`query` 命令新增 `--export-tot-html` 参数）；同时新增 `configs/graphrag_bench_medical.yaml` 与 `configs/graphrag_bench_novel.yaml`，在工作台侧边栏完整编入 `GraphRAG-Bench Medical`（Stage 3.1 `nomic-embed-text` + 236 条 `SYNONYM_OF`）与 `GraphRAG-Bench Novel`（31 条 `SYNONYM_OF`）两套高难数据集，补齐 `html_exporter.py` 医学/叙事节点配色与**按索引自动对齐 Embedding Provider（256d `local_hash` ↔ 768d `ollama_native`）**防维度冲突机制，同步更新 `README.md`。
+  - 在 `tests/test_workbench.py` 新增 `test_tot_tree_exporter_builds_interactive_html_for_tot_and_cot` 与 `test_workbench_discovers_medical_and_novel_configs_and_auto_detects_embedder` 单元测试覆盖 Node→Edge→Node 跳数轨迹、最终核心片收敛统计、双域配置发现与自动嵌入对齐。
+- **验证方式**：`ruff check src tests scripts` 0 告警，`pytest -v` 全部通过，并通过本机 `qwen3.5:9b` 工业离心泵并发故障诊断实跑导出 `outputs/fault_diagnosis/tot_reasoning_tree.html` 验证。
+- **隐私与迁移自检**：生成的 HTML 演示产物隔离在 `.gitignore` 屏蔽的 `/outputs/` 目录，无密钥、本机绝对路径或私有数据入库。
+
+---
+
 ## [2026-11-24] Stage 3.1 Retrieval Upgrade - 真实稠密嵌入（Ollama 原生 + SQLite 缓存）、双语 Okapi BM25 + Dense RRF 与 HippoRAG 2（`SYNONYM_OF` + Query-to-Triple）
 - **提交类型**：`feat`
 - **变更背景**：直击 Stage 2/3.0 在千级切片开放语料上 `local_hash` 假向量锁死检索召回率（Medical `47.7%–60.3%`、Novel `29.5%–46.8%`）的核心瓶颈，完整落地 `docs/stage3_nextgen_graphrag_plan.md` 规划的 Stage 3.1 下一代检索底座。

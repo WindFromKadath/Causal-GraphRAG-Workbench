@@ -31,6 +31,7 @@ from llm_graphrag_kg.viz.audit_report import export_audit_artifacts
 from llm_graphrag_kg.viz.graphml_exporter import export_graphml
 from llm_graphrag_kg.viz.html_exporter import export_pyvis_html
 from llm_graphrag_kg.viz.schema_validator import validate_kg_shacl_lite
+from llm_graphrag_kg.viz.tot_tree_exporter import export_tot_tree_html
 
 app = typer.Typer(
     name="llm-graphrag-kg",
@@ -261,10 +262,20 @@ def query(
         str | None, typer.Option(help="Retrieval mode: local | global | hybrid | ppr")
     ] = None,
     reasoning: Annotated[
-        str | None, typer.Option(help="Reasoning paradigm: direct | cot | tot")
+        str | None,
+        typer.Option(
+            help="Reasoning paradigm: auto | direct | cot | cot_iter | tot | tot_bfs | tot_dfs | multi_branch"
+        ),
     ] = None,
     provider: Annotated[
         str | None, typer.Option(help="Override LLM provider: openai_compat | mock")
+    ] = None,
+    fast_model: Annotated[
+        str | None,
+        typer.Option(
+            "--fast-model",
+            help="Optional intermediate planner/evaluator model (e.g. qwen3.5:4b).",
+        ),
     ] = None,
     embedder: Annotated[
         str | None, typer.Option(help="Override embedding provider: local_hash | openai_compat")
@@ -275,6 +286,13 @@ def query(
     export_html: Annotated[
         bool,
         typer.Option("--export-html", help="Export PyVis HTML highlighting the retrieved subgraph."),
+    ] = False,
+    export_tot_html: Annotated[
+        bool,
+        typer.Option(
+            "--export-tot-html",
+            help="Export standalone interactive ToT tree & causal chain showcase HTML.",
+        ),
     ] = False,
     compact: Annotated[
         bool | None,
@@ -295,11 +313,16 @@ def query(
         llm_provider_override=provider,
         embedding_provider_override=embedder,
     )
+    if fast_model is not None:
+        cfg.env.llm_fast_model = fast_model or None
     eff_reasoning = (reasoning or cfg.reasoning.default_paradigm).strip().lower()
     if think is not None:
         cfg.env.llm_think = think
-    elif eff_reasoning in {"cot", "tot"} and cfg.env.llm_think is None:
-        # Stage 2 design: replace black-box implicit thinking with explicit structured Graph-CoT/ToT
+    elif (
+        eff_reasoning in {"cot", "cot_iter", "tot", "tot_bfs", "tot_dfs", "multi_branch", "auto"}
+        and cfg.env.llm_think is None
+    ):
+        # Stage 2/3 design: replace black-box implicit thinking with explicit structured reasoning
         cfg.env.llm_think = False
     pipeline = GraphRAGPipeline(cfg)
     result = pipeline.query(
@@ -329,11 +352,27 @@ def query(
     trace_table.add_row("Evidence Chunks", str(len(result.evidences)))
     comp = result.metadata.get("compaction")
     if isinstance(comp, dict):
+        if "raw_tokens_est" in comp and "compacted_tokens_est" in comp:
+            trace_table.add_row(
+                "Context Compaction",
+                f"{comp['raw_tokens_est']} -> {comp['compacted_tokens_est']} tok "
+                f"(-{float(comp.get('compression_ratio', 0.0)) * 100:.1f}%, "
+                f"dropped_nodes={comp.get('dropped_nodes', 0)}, "
+                f"levels={comp.get('applied_levels', [])})",
+            )
+        else:
+            summary_parts = [f"{k}={v}" for k, v in comp.items() if k != "mode"]
+            trace_table.add_row(
+                "Context Compaction",
+                f"{comp.get('mode', 'custom')} ({', '.join(summary_parts[:6])})",
+            )
+    route_data = result.metadata.get("route_decision")
+    if isinstance(route_data, dict):
         trace_table.add_row(
-            "Context Compaction",
-            f"{comp['raw_tokens_est']} -> {comp['compacted_tokens_est']} tok "
-            f"(-{comp['compression_ratio'] * 100:.1f}%, dropped_nodes={comp['dropped_nodes']}, "
-            f"levels={comp['applied_levels']})",
+            "Adaptive Route",
+            f"{route_data.get('route')} -> {route_data.get('target_paradigm')} "
+            f"(early_stop={route_data.get('early_stop')}, "
+            f"cov={float(route_data.get('coverage_score', 0.0)) * 100:.1f}%)",
         )
     reasoning_data = result.metadata.get("reasoning")
     if isinstance(reasoning_data, dict):
@@ -401,6 +440,15 @@ def query(
             title=f"Query Subgraph Trace ({result.mode}): {question[:60]}",
         )
         console.print(f"[cyan]Trace HTML exported to:[/cyan] {trace_html}")
+
+    if export_tot_html:
+        tot_html = export_tot_tree_html(
+            result,
+            pipeline.graph_store,
+            cfg.output_path / "tot_reasoning_tree.html",
+            vector_store=pipeline.vector_store,
+        )
+        console.print(f"[cyan]ToT Tree & Causal Chain HTML exported to:[/cyan] {tot_html}")
 
 
 @app.command("privacy-check")
@@ -845,6 +893,13 @@ def eval_grb(
     provider: Annotated[
         str | None, typer.Option(help="Override LLM provider: ollama_native | openai_compat | mock")
     ] = None,
+    fast_model: Annotated[
+        str | None,
+        typer.Option(
+            "--fast-model",
+            help="Optional fast intermediate planner/evaluator model (e.g. qwen3.5:4b).",
+        ),
+    ] = None,
     embedder: Annotated[
         str | None,
         typer.Option(help="Override embedding provider: ollama_native | openai_compat | local_hash"),
@@ -868,6 +923,8 @@ def eval_grb(
     )
     if embedding_model:
         cfg.env.embedding_model = embedding_model
+    if fast_model is not None:
+        cfg.env.llm_fast_model = fast_model or None
     if think is not None:
         cfg.env.llm_think = think
     if num_ctx is not None:

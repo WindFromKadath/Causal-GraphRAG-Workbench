@@ -80,10 +80,14 @@ class HarnessConfig(BaseModel):
 
 
 class ReasoningConfig(BaseModel):
-    default_paradigm: str = "direct"  # direct | cot | tot
+    default_paradigm: str = "direct"  # auto | direct | cot | tot | multi_branch
     tot_beam_width: int = 3
     tot_max_depth: int = 2
     tot_max_llm_calls: int = 6
+    # Stage 3.2: Adaptive Query Router & Dynamic Early Stopping
+    enable_early_stop: bool = True
+    early_stop_coverage_threshold: float = 0.80
+    multi_branch_min_score: float = 0.25
 
 
 class EnvSettings(BaseSettings):
@@ -105,6 +109,9 @@ class EnvSettings(BaseSettings):
     llm_num_ctx: int | None = None
     llm_num_gpu: int | None = None
     llm_max_tokens: int | None = None
+    # Stage 3.2+ dual-model tier: optional fast intermediate planner/evaluator (e.g. qwen3.5:4b)
+    llm_fast_model: str | None = None
+    llm_fast_num_ctx: int | None = 8192
 
     embedding_provider: str = "local_hash"
     embedding_base_url: str = "http://127.0.0.1:11434/v1"
@@ -155,6 +162,7 @@ class AppConfig(BaseModel):
             "llm_think": self.env.llm_think,
             "llm_num_ctx": self.env.llm_num_ctx,
             "llm_num_gpu": self.env.llm_num_gpu,
+            "llm_fast_model": self.env.llm_fast_model,
             "llm_api_key": mask_secret(self.env.llm_api_key),
             "embedding_provider": self.env.embedding_provider,
             "embedding_base_url": self.env.embedding_base_url,

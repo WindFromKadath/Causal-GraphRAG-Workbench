@@ -58,6 +58,35 @@ def create_llm_client(config: AppConfig) -> BaseLLMClient:
     raise ValueError(f"Unsupported llm_provider: {config.env.llm_provider!r}")
 
 
+def create_fast_llm_client(config: AppConfig) -> BaseLLMClient | None:
+    """Create optional fast-tier LLM client for intermediate CoT/ToT planning & pruning."""
+    fast_model = (config.env.llm_fast_model or "").strip()
+    if not fast_model or fast_model == config.env.llm_model:
+        return None
+    provider = config.env.llm_provider.strip().lower()
+    if provider == "mock":
+        return MockLLMClient()
+    fast_ctx = config.env.llm_fast_num_ctx or config.env.llm_num_ctx or 8192
+    if provider == "ollama_native" or (":11434" in config.env.llm_base_url):
+        return OllamaNativeLLMClient(
+            base_url=config.env.llm_base_url,
+            model=fast_model,
+            timeout=config.env.llm_timeout,
+            think=False if config.env.llm_think is None else config.env.llm_think,
+            num_ctx=fast_ctx,
+            num_gpu=config.env.llm_num_gpu,
+            max_tokens=config.env.llm_max_tokens,
+        )
+    if provider == "openai_compat":
+        return OpenAICompatLLMClient(
+            base_url=config.env.llm_base_url,
+            api_key=config.env.llm_api_key,
+            model=fast_model,
+            timeout=config.env.llm_timeout,
+        )
+    return None
+
+
 def create_embedding_client(config: AppConfig) -> BaseEmbeddingClient:
     provider = config.env.embedding_provider.strip().lower()
     if provider == "local_hash":

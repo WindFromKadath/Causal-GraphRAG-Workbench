@@ -25,7 +25,10 @@ from llm_graphrag_kg.harness.context_compactor import ContextCompactor
 from llm_graphrag_kg.harness.runtime import LLMHarness
 from llm_graphrag_kg.pipelines.hipporag import SemanticGraphIndex
 from llm_graphrag_kg.reasoning.cot import GraphCoTEngine
+from llm_graphrag_kg.reasoning.cot_iterative import IterativeGraphCoTEngine
+from llm_graphrag_kg.reasoning.router import route_query
 from llm_graphrag_kg.reasoning.tot import GraphToTEngine
+from llm_graphrag_kg.reasoning.tot_deep import DeepGraphToTEngine
 
 QA_SYSTEM_PROMPT = (
     "You are a grounded GraphRAG assistant. Answer the user's question accurately using ONLY "
@@ -53,9 +56,13 @@ class GraphRAGRetriever:
         enable_compact: bool = True,
         compactor: ContextCompactor | None = None,
         harness: LLMHarness | None = None,
+        planner_harness: LLMHarness | None = None,
         tot_beam_width: int = 3,
         tot_max_depth: int = 2,
         tot_max_llm_calls: int = 6,
+        enable_early_stop: bool = True,
+        early_stop_coverage_threshold: float = 0.80,
+        multi_branch_min_score: float = 0.25,
         semantic_index: SemanticGraphIndex | None = None,
         enable_hybrid_bm25: bool = True,
         hybrid_bm25_weight: float = 0.35,
@@ -75,9 +82,13 @@ class GraphRAGRetriever:
         self.enable_compact = enable_compact
         self.compactor = compactor or ContextCompactor()
         self.harness = harness or LLMHarness(llm, compactor=self.compactor)
+        self.planner_harness = planner_harness or self.harness
         self.tot_beam_width = tot_beam_width
         self.tot_max_depth = tot_max_depth
         self.tot_max_llm_calls = tot_max_llm_calls
+        self.enable_early_stop = enable_early_stop
+        self.early_stop_coverage_threshold = early_stop_coverage_threshold
+        self.multi_branch_min_score = multi_branch_min_score
         self.semantic_index = semantic_index
         self.enable_hybrid_bm25 = enable_hybrid_bm25
         self.hybrid_bm25_weight = hybrid_bm25_weight
@@ -98,9 +109,20 @@ class GraphRAGRetriever:
                 f"Unsupported retrieval mode: {mode!r}. Use local | global | hybrid | ppr."
             )
         normalized_reasoning = reasoning.strip().lower()
-        if normalized_reasoning not in {"direct", "cot", "tot"}:
+        valid_paradigms = {
+            "direct",
+            "cot",
+            "cot_iter",
+            "tot",
+            "tot_bfs",
+            "tot_dfs",
+            "multi_branch",
+            "auto",
+        }
+        if normalized_reasoning not in valid_paradigms:
             raise ValueError(
-                f"Unsupported reasoning paradigm: {reasoning!r}. Use direct | cot | tot."
+                f"Unsupported reasoning paradigm: {reasoning!r}. "
+                "Use auto | direct | cot | cot_iter | tot | tot_bfs | tot_dfs | multi_branch."
             )
 
         seed_entities: list[Entity] = []
@@ -268,8 +290,22 @@ class GraphRAGRetriever:
         evidences = list(evidence_by_chunk.values())
         compaction_meta: dict[str, object] | None = None
         reasoning_meta: dict[str, object] | None = None
+        route_decision_meta: dict[str, object] | None = None
 
-        if normalized_reasoning == "cot":
+        effective_reasoning = normalized_reasoning
+        if normalized_reasoning == "auto":
+            decision = route_query(
+                question,
+                seed_entities=seed_entities,
+                relations=sub_relations,
+                evidences=evidences,
+                enable_early_stop=self.enable_early_stop,
+                early_stop_coverage_threshold=self.early_stop_coverage_threshold,
+            )
+            effective_reasoning = decision.target_paradigm
+            route_decision_meta = decision.model_dump()
+
+        if effective_reasoning == "cot":
             cot_engine = GraphCoTEngine(
                 self.harness,
                 compactor=self.compactor,
@@ -284,10 +320,58 @@ class GraphRAGRetriever:
                 communities=selected_communities,
                 evidences=evidences,
             )
+            if route_decision_meta is not None:
+                cot_result = cot_result.model_copy(update={"route_decision": route_decision_meta})
             answer = cot_result.final_answer
             compaction_meta = cot_result.compaction
             reasoning_meta = cot_result.model_dump()
-        elif normalized_reasoning == "tot":
+        elif effective_reasoning == "cot_iter":
+            iter_engine = IterativeGraphCoTEngine(
+                self.harness,
+                planner_harness=self.planner_harness,
+                graph_store=self.graph_store,
+                vector_store=self.vector_store,
+                embedder=self.embedder,
+                semantic_index=self.semantic_index,
+                compactor=self.compactor,
+                max_iters=3,
+                temperature=self.temperature,
+            )
+            iter_result, expanded_entities, sub_relations, evidences = iter_engine.run(
+                question=question,
+                seed_entity_ids=[e.entity_id for e in seed_entities],
+                entities=expanded_entities,
+                relations=sub_relations,
+                communities=selected_communities,
+                evidences=evidences,
+            )
+            answer = iter_result.final_answer
+            compaction_meta = iter_result.compaction
+            reasoning_meta = iter_result.model_dump()
+        elif effective_reasoning in {"tot_bfs", "tot_dfs"}:
+            deep_engine = DeepGraphToTEngine(
+                self.harness,
+                planner_harness=self.planner_harness,
+                graph_store=self.graph_store,
+                vector_store=self.vector_store,
+                compactor=self.compactor,
+                search_strategy="dfs" if effective_reasoning == "tot_dfs" else "bfs",
+                beam_width=min(self.tot_beam_width, 3),
+                max_depth=self.tot_max_depth,
+                temperature=self.temperature,
+            )
+            deep_result, expanded_entities, sub_relations, evidences = deep_engine.run(
+                question=question,
+                seed_entity_ids=[e.entity_id for e in seed_entities],
+                entities=expanded_entities,
+                relations=sub_relations,
+                communities=selected_communities,
+                evidences=evidences,
+            )
+            answer = deep_result.final_answer
+            compaction_meta = deep_result.compaction
+            reasoning_meta = deep_result.model_dump()
+        elif effective_reasoning in {"tot", "multi_branch"}:
             tot_engine = GraphToTEngine(
                 self.harness,
                 graph_store=self.graph_store,
@@ -298,6 +382,8 @@ class GraphRAGRetriever:
                 max_depth=self.tot_max_depth,
                 max_llm_calls=self.tot_max_llm_calls,
                 temperature=self.temperature,
+                synthesis_mode="additive" if effective_reasoning == "multi_branch" else "competitive",
+                min_branch_score=self.multi_branch_min_score,
             )
             tot_result, expanded_entities, sub_relations, evidences = tot_engine.run(
                 question=question,
@@ -307,6 +393,8 @@ class GraphRAGRetriever:
                 communities=selected_communities,
                 evidences=evidences,
             )
+            if route_decision_meta is not None:
+                tot_result = tot_result.model_copy(update={"route_decision": route_decision_meta})
             answer = tot_result.final_answer
             compaction_meta = tot_result.compaction
             reasoning_meta = tot_result.model_dump()
@@ -355,13 +443,17 @@ class GraphRAGRetriever:
             relation_ids=[r.relation_id for r in sub_relations],
             community_ids=[c.community_id for c in selected_communities],
         )
+        merged_ledger = self.harness.ledger.summary()
+        if isinstance(reasoning_meta, dict) and isinstance(reasoning_meta.get("trace_ledger"), dict):
+            merged_ledger = dict(reasoning_meta["trace_ledger"])
         metadata: dict[str, object] = {
             "seed_entity_names": [e.name for e in seed_entities],
             "expanded_entity_count": len(expanded_entities),
             "relation_count": len(sub_relations),
             "community_count": len(selected_communities),
-            "reasoning_paradigm": normalized_reasoning,
-            "harness_ledger": self.harness.ledger.summary(),
+            "reasoning_paradigm": effective_reasoning,
+            "requested_reasoning": normalized_reasoning,
+            "harness_ledger": merged_ledger,
             "retrieval_stage3_1": {
                 "hybrid_bm25_rrf": used_hybrid_rrf,
                 "dense_entity_hits": len(dense_entity_weights),
@@ -374,10 +466,27 @@ class GraphRAGRetriever:
             metadata["compaction"] = compaction_meta
         if reasoning_meta is not None:
             metadata["reasoning"] = reasoning_meta
+        if route_decision_meta is not None:
+            metadata["route_decision"] = route_decision_meta
         if ppr_top_scores:
             metadata["ppr_top_nodes"] = dict(
                 sorted(ppr_top_scores.items(), key=lambda kv: -kv[1])[:8]
             )
+        expanded_eids_set = {e.entity_id for e in expanded_entities}
+        metadata["traversal_trace"] = {
+            "seed_entity_ids": [e.entity_id for e in seed_entities],
+            "dense_entity_scores": {
+                eid: round(float(sc), 4) for eid, sc in dense_entity_weights.items()
+            },
+            "triple_seed_scores": {
+                eid: round(float(sc), 4) for eid, sc in triple_seed_weights.items()
+            },
+            "ppr_entity_scores": {
+                eid: round(float(ppr_top_scores[eid]), 4)
+                for eid in expanded_eids_set
+                if eid in ppr_top_scores
+            },
+        }
 
         return QueryResult(
             question=question,

@@ -75,17 +75,30 @@ flowchart TD
   - **Novel (25Q)**：`Ret EvRec` 暴涨至 `65.9%` → `67.9%` → **`71.9%`** (`ppr_cot`) → **`72.4%`** (`ppr_tot`，超 ≥65% 验收线 **+7.4pp**)，其中 `ppr_cot` 以 `Token-F1 28.1% / ROUGE-L 20.7% / Grounding 100.0%` 登顶，`hybrid_direct` 回答覆盖率 `68.2%` 登顶。
 - **参考源码**：[`OSU-NLP-Group/HippoRAG`](https://github.com/OSU-NLP-Group/HippoRAG)（ICML 2025）。
 
-### Stage 3.2：自适应任务路由（Adaptive Router）+ 非剪枝多分支聚合 + 动态早停
+### Stage 3.2（已完成）：自适应任务路由（Adaptive Router）+ 非剪枝多分支聚合 + 动态早停
 - **目标**：彻底消除 `Graph-ToT` 在摘要/多因子题上的“检索-生成剪刀差”，并显著降低端到端平均延迟。
-- **核心改动**：
-  1. **轻量任务路由器**（新增 `src/llm_graphrag_kg/reasoning/router.py`）：
-     - 结合规则特征与轻量分类，将查询自动路由至 3 条执行路径：
-       - `fact_direct`（简单单跳/首跳高置信早停）→ 1 步 `PPR + CoT`，跳过冗余分支搜索；
-       - `exclusive_diagnosis`（互斥根因/故障排除/假设检验）→ `Graph-ToT` 竞争剪枝 + L2 反证折叠；
-       - `multi_facet_synthesis`（多因子复杂推理 / `Contextual Summarize` 全局摘要）→ **非剪枝多分支聚合（Multi-Branch Additive Synthesis）**，保留 Top-K 分支的全部高分证据并集，严禁丢弃互补信息。
-  2. **修复 `tot.py` Phase 4 证据截断**：取消 220 字符硬截断，改为 L1 完整关键句集合注入（参考 **ToG-2** 图文双向保留机制）。
-  3. **动态早停（Dynamic Early Stopping）**：借鉴 `Search-R1` / `RAG-R1` 控制思路，当 PPR 首跳确定性图谱覆盖率高于阈值时自动早停，避免简单题空耗 3 轮调用。
+- **核心落地**：
+  1. **轻量任务路由器与动态早停**（新增 `src/llm_graphrag_kg/reasoning/router.py`）：
+     - 零额外 LLM 延迟（`< 1ms`），结合中英意图特征与首跳确定性图谱/原文覆盖率（`early_stop_coverage_threshold=0.80`），将查询自动分流至 `fact_direct`（早停走单轮 `cot`）、`exclusive_diagnosis`（竞争剪枝 `tot`）或 `multi_facet_synthesis`（非剪枝并集 `multi_branch`）；
+  2. **修复 `tot.py` Phase 4 证据截断 + 非剪枝多分支聚合**（升级 `src/llm_graphrag_kg/reasoning/tot.py`）：
+     - 取消破坏性的 220 字符硬截断，并在 `tot` Phase 4 补充高分 PPR/RRF 原文切片（ToG-2 图文双向无损保留）；
+     - 新增 `synthesis_mode="additive"`（`multi_branch`，仅需 **2 次 LLM 调用**），保留全部高于阈值（`>= 0.25`）的互补分支与最多 8 条去重完整原文切片并集，经 `GroundingAudit` 核验输出；
+  3. **全链路接入**：打通 `config.py` / `retriever.py` / `workflow.py` / `adapters/graphrag_bench.py`（新增 `ppr_multi_branch` / `ppr_auto`）/ `cli.py` / `viz/app.py` 与 `tests/test_stage3_2_router_multibranch.py`。
+- **实测验收结果**（同源 50 题、`qwen3.5:9b` + `nomic-embed-text`）：
+  - **剪刀差彻底翻转**：`Contextual Summarize` 回答证据覆盖率在 Medical 从 `18.7%` 暴涨至 **`60.5%–61.9%`**（**+43.2pp**，反超 `hybrid_direct` `58.0%`，`multi_branch` Token-F1 `39.9%` 登顶第 1），在 Novel 从 `22.7%` 暴涨至 **`59.2%`**（**+36.5pp**，`ppr_auto` Token-F1 `31.1%` 与覆盖率 `59.2%` 双双反超 `naive_rag` `27.8% / 54.2%`）；
+  - **ToG-2 截断修复奇效**：修复 220 截断后的 `ppr_tot` 在双域 `Complex Reasoning` 上均拿下 Token-F1 第 1（Medical **`41.9%`** vs `naive_rag` `36.4%`，Novel **`29.6%`** vs `naive_rag` `24.2%`）；
+  - **全量与延迟双达标**：Medical `ppr_auto` 全量回答覆盖率 **`68.2%`** 登顶第 1；Novel `ppr_auto` 全量四维指标（F1 `26.4%` / EvCov `63.0%` / RetRec `72.4%`）全面领先 Dense `naive_rag`；`multi_branch` 双域 Grounding **100.0%（50/50 零幻觉）**，平均耗时 **`18.8s–21.3s`**，较 Stage 2 ToT（`51.8s–52.4s`）下降 **`-59.4% ~ -63.7%`**（远超 `≥ 40%` 验收线）。
 - **参考论文**：*When to use Graphs in RAG*（ICLR）、[`OpenSPG/KAG`](https://github.com/OpenSPG/KAG)、[`DataArcTech/ToG-2`](https://github.com/DataArcTech/ToG-2)。
+
+### Stage 3.2+ 基线深化（已完成）：论文完整版迭代 `Graph-CoT v2` & 多深度 `Graph-ToT v2 (BFS/DFS)` + `4b vs 9b` 双模型消融
+- **目标**：补齐 Stage 2.2/2.3 初版 CoT（单轮 JSON）与 ToT（Depth-1 扁平剪枝）相对原论文的关键机制缺口，并实证评测轻重双模型分工（`qwen3.5:4b` 中间层 vs `qwen3.5:9b` 统一层）。
+- **核心落地**：
+  1. **迭代式 `Graph-CoT v2`（`cot_iter`）**：新增 `src/llm_graphrag_kg/reasoning/cot_iterative.py`，落地 3 轮真实 `Thought -> RetrieveNode / InspectEntity / ExpandNeighbors / FetchChunk / Finish -> Observation` KG 工具循环与 PoG `[SELF-CORRECT]` 纠错反馈；
+  2. **多深度 `Graph-ToT v2`（`tot_bfs` & `tot_dfs`）**：新增 `src/llm_graphrag_kg/reasoning/tot_deep.py`，实现 Depth `1 -> 2` 真实图边扩展、ToT 离散状态评估（`sure / likely / impossible`）、BFS Beam Search 与 DFS 死胡同真实回溯（`backtracked=True`），并在可视化树导出器 `tot_tree_exporter.py` 中展示 `D1/D2` 深度、`verdict` 与 `↩ 回溯` 标记；
+  3. **双模型分层接口与遥测**：`config.py` / `factory.py` / `cli.py` 支持 `--fast-model`（`GRAPHRAG_LLM_FAST_MODEL`），`adapters/graphrag_bench.py` 新增 `ppr_cot_iter` / `ppr_tot_bfs` / `ppr_tot_dfs` 与 `planner_seconds` / `load_seconds` / `max_depth_reached` / `backtrack_count` 遥测。
+- **实测消融结论**（`GraphRAG-Bench Medical` 同源 10 题，5 Complex Reasoning + 5 Contextual Summarize，`seed=42`）：
+  - **v1 → v2 跃升（`9b` 统一）**：`cot_iter` Token-F1 从 `36.0%` 跃升至 **`44.7%`（+8.7pp）**、ROUGE-L `34.4%`、Grounding `94.5%`；`tot_bfs` / `tot_dfs` 检索证据召回飙至 **`86.7%`（#1）**，`tot_bfs` Grounding **`100.0%`**（`20.97s`），`tot_dfs` Token-F1 达 **`41.3%`（+9.9pp vs D1 ToT）** 并在 8/10 题上触发真实回溯（平均 `1.4` 次）；
+  - **`4b` vs `9b` 中间层边界**：Complex Reasoning 上 `9b` 稳赢 `+2.4 ~ +3.6pp` F1；离散打分 `tot_bfs` 上 `4b` 反超 `9b`（F1 `39.5%` vs `39.1%`，ROUGE-L `29.3%` vs `27.4%`），`cot_iter (4b→9b)` 拿下最高回答覆盖率 `72.4%`；纯算力上 `4b` 提速 **`14.7% ~ 24.1%`**（Net 降 `3.1s ~ 6.7s`），但在 8 GB 单卡在线交互中每题换模税达 **`+7.09s ~ +11.16s`**——因此 **8 GB 单卡在线选统一 `9b`，≥12–16 GB 显存 / 云端双端点 / 离线两阶段批处理选 `4b → 9b`**。
 
 ### Stage 3.3：官方口径 LLM-as-a-Judge 评测体系 + 语义三元组 / 工业 RDF 导入
 - **目标**：建立无拒答失真的科学评测标尺，并打通结构化工业 RDF 知识图谱与高质量语义 OpenIE 抽图。
@@ -119,7 +132,7 @@ retrieval:
   synonym_cosine_threshold: 0.85
 
 reasoning:
-  default_paradigm: auto        # auto | direct | cot | tot | multi_branch
+  default_paradigm: auto        # auto | direct | cot | cot_iter | tot | multi_branch | tot_bfs | tot_dfs
   enable_early_stop: true
   early_stop_coverage_threshold: 0.80
 
