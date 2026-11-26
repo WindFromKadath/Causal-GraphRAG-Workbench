@@ -143,16 +143,19 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE TABLE IF NOT EXISTS request_traces (
     request_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL DEFAULT '',
     tenant_id TEXT NOT NULL DEFAULT 'default',
+    acl TEXT[] NOT NULL DEFAULT ARRAY['public']::TEXT[],
     session_id TEXT NOT NULL DEFAULT '',
     question TEXT NOT NULL,
     rewritten_queries TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
-    retrieval_mode TEXT NOT NULL DEFAULT 'ppr',
-    reasoning_paradigm TEXT NOT NULL DEFAULT 'auto',
-    final_status TEXT NOT NULL DEFAULT 'answered',
-    latency_ms DOUBLE PRECISION NOT NULL DEFAULT 0.0,
-    stage_timings JSONB NOT NULL DEFAULT '{}'::JSONB,
-    version_snapshot JSONB NOT NULL DEFAULT '{}'::JSONB,
-    trace_payload JSONB NOT NULL DEFAULT '{}'::JSONB,
+    route_decision JSONB NOT NULL DEFAULT '{}'::JSONB,
+    coarse_hits JSONB NOT NULL DEFAULT '[]'::JSONB,
+    reranked_hits JSONB NOT NULL DEFAULT '[]'::JSONB,
+    grounding_score DOUBLE PRECISION,
+    terminal_status TEXT NOT NULL DEFAULT 'success',
+    waterfall JSONB NOT NULL DEFAULT '[]'::JSONB,
+    total_ms DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    model_versions JSONB NOT NULL DEFAULT '{}'::JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

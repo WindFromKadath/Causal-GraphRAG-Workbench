@@ -154,6 +154,17 @@ class EnvSettings(BaseSettings):
     default_tenant_id: str = "default"
     default_acl_roles: str = "public,internal"
 
+    # Stage 4.3 Retrieval Funnel (ONNX CPU Reranker), Thin LangGraph Checkpointer & OpenTelemetry
+    reranker_backend: str = "auto"  # auto | onnx | hybrid_lexical | off
+    reranker_model: str = "Xenova/bge-reranker-base"
+    reranker_onnx_file: str = "onnx/model_quantized.onnx"
+    reranker_model_dir: str | None = None
+    reranker_top_n: int = 8
+    reranker_max_length: int = 512
+    langgraph_checkpointer: str = "memory"  # memory | postgres
+    otel_service_name: str = "llm-graphrag-kg"
+    otel_exporter_otlp_endpoint: str | None = None
+
 
 class AppConfig(BaseModel):
     """Unified application configuration with safe redaction helpers."""
@@ -254,5 +265,6 @@ def load_config(
         visualization=VisualizationConfig(**raw.get("visualization", {})),
         harness=HarnessConfig(**raw.get("harness", {})),
         reasoning=ReasoningConfig(**raw.get("reasoning", {})),
+        memory=MemoryConfig(**raw.get("memory", {})),
         env=env_settings,
     )

@@ -1649,3 +1649,132 @@ def dlq_list_cmd(
             str(item.get("error", ""))[:120],
         )
     console.print(table)
+
+
+@app.command("agent-query")
+def agent_query_cmd(
+    question: Annotated[str, typer.Argument(help="Question for the Stage 4.3 LangGraph stateful agent.")],
+    mode: Annotated[str, typer.Option("--mode", help="GraphRAG retrieval mode: ppr | hybrid | local | global")] = "ppr",
+    reasoning: Annotated[
+        str, typer.Option("--reasoning", help="Reasoning paradigm: auto | cot | tot | multi_branch")
+    ] = "auto",
+    vector_backend: Annotated[str | None, typer.Option("--vector-backend", help="local | pgvector")] = None,
+    graph_backend: Annotated[str | None, typer.Option("--graph-backend", help="networkx | neo4j")] = None,
+    tenant: Annotated[str | None, typer.Option("--tenant", help="Tenant ID.")] = None,
+    acl: Annotated[str | None, typer.Option("--acl", help="Comma-separated ACL roles.")] = None,
+    checkpointer: Annotated[
+        str, typer.Option("--checkpointer", help="LangGraph checkpointer: memory | postgres")
+    ] = "memory",
+    reranker_backend: Annotated[
+        str, typer.Option("--reranker", help="Reranker backend: auto | onnx | hybrid_lexical | off")
+    ] = "auto",
+    writeback: Annotated[bool, typer.Option("--writeback/--no-writeback", help="Enable A-MEM write-back.")] = False,
+    hitl: Annotated[
+        bool, typer.Option("--hitl/--no-hitl", help="Pause at LangGraph interrupt() for HITL approval.")
+    ] = False,
+    approve_hitl: Annotated[
+        bool | None, typer.Option("--approve-hitl/--reject-hitl", help="Auto-resume HITL interrupt for scripted runs.")
+    ] = None,
+    provider: Annotated[str | None, typer.Option("--provider", help="LLM provider override.")] = None,
+    embedder: Annotated[str | None, typer.Option("--embedder", help="Embedding provider override.")] = None,
+    storage_dir: Annotated[Path | None, typer.Option("--storage", help="Optional local storage dir.")] = None,
+    config_file: Annotated[Path | None, typer.Option("--config-file", help="Optional YAML config path.")] = None,
+) -> None:
+    """Execute Stage 4.3 thin LangGraph cyclic RAG (Rewrite -> Rerank -> Corrective -> GraphRAG -> HITL -> Trace)."""
+    from llm_graphrag_kg.agent.graph import GraphRAGAgentRunner
+
+    cfg = load_config(
+        config_path=config_file,
+        llm_provider_override=provider,
+        embedding_provider_override=embedder,
+    )
+    if vector_backend:
+        cfg.env.vector_backend = vector_backend
+    if graph_backend:
+        cfg.env.graph_backend = graph_backend
+    if tenant:
+        cfg.env.default_tenant_id = tenant
+    if acl:
+        cfg.env.default_acl_roles = acl
+    cfg.env.reranker_backend = reranker_backend
+    cfg.env.langgraph_checkpointer = checkpointer
+    if cfg.env.vector_backend.strip().lower() == "pgvector":
+        if embedder is None and cfg.env.embedding_provider.strip().lower() == "local_hash":
+            cfg.env.embedding_provider = "ollama_native"
+    if cfg.env.llm_think is None:
+        cfg.env.llm_think = False
+
+    pipeline = GraphRAGPipeline(cfg)
+    if cfg.env.vector_backend.strip().lower() == "local":
+        pipeline.load(storage_dir)
+
+    runner = GraphRAGAgentRunner(pipeline, checkpointer_mode=checkpointer)
+    try:
+        out = runner.run(
+            question,
+            tenant_id=cfg.env.default_tenant_id,
+            acl_roles=[r.strip() for r in cfg.env.default_acl_roles.split(",") if r.strip()],
+            mode=mode,
+            reasoning=reasoning,
+            enable_writeback=writeback,
+            require_hitl_approval=hitl,
+        )
+        if out.status == "interrupted_hitl" and approve_hitl is not None:
+            console.print(
+                Panel(
+                    json.dumps(out.interrupt_payload, ensure_ascii=False, indent=2),
+                    title=f"HITL Interrupt Paused (thread={out.thread_id}) -> Resuming approved={approve_hitl}",
+                    border_style="yellow",
+                )
+            )
+            out = runner.resume_hitl(out.thread_id, approved=approve_hitl, reviewer="cli_operator")
+    finally:
+        runner.close()
+        if hasattr(pipeline.graph_store, "close"):
+            pipeline.graph_store.close()
+
+    console.print(
+        Panel(
+            out.answer or "(Interrupted before final output)",
+            title=(
+                f"Stage 4.3 LangGraph Answer ({out.status} | {out.total_ms:.0f} ms | "
+                f"reranker={out.reranker_backend})"
+            ),
+            border_style="green" if out.status == "completed" else "yellow",
+        )
+    )
+    wf_table = Table(title=f"LangGraph Execution Waterfall (request={out.request_id} | thread={out.thread_id})")
+    wf_table.add_column("Node", style="cyan")
+    wf_table.add_column("Duration (ms)", style="yellow")
+    wf_table.add_column("Summary", style="white")
+    for step in out.waterfall:
+        wf_table.add_row(step.node, f"{step.duration_ms:.1f}", json.dumps(step.summary, ensure_ascii=False)[:110])
+    console.print(wf_table)
+
+
+@app.command("traces")
+def traces_cmd(
+    tenant: Annotated[str | None, typer.Option("--tenant", help="Optional filter by tenant ID.")] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Max trace rows to display.")] = 10,
+    config_file: Annotated[Path | None, typer.Option("--config-file", help="Optional YAML config path.")] = None,
+) -> None:
+    """Inspect recent Stage 4.3 request traces recorded in PostgreSQL `request_traces`."""
+    from llm_graphrag_kg.observability.tracing import TraceRecorder
+
+    cfg = load_config(config_path=config_file)
+    rec = TraceRecorder(postgres_dsn=cfg.env.postgres_dsn, persist_to_pg=True)
+    rows = rec.list_recent_pg_traces(tenant_id=tenant, limit=limit)
+    if not rows:
+        console.print("[dim]No request traces recorded yet.[/dim]")
+        return
+    table = Table(title=f"PostgreSQL Request Traces (latest {len(rows)})")
+    table.add_column("Request ID", style="cyan")
+    table.add_column("Tenant", style="magenta")
+    table.add_column("Status", style="green")
+    table.add_column("Grounding", style="yellow")
+    table.add_column("Total ms", style="white")
+    table.add_column("Question", style="white")
+    for t in rows:
+        g_str = f"{t.grounding_score * 100:.0f}%" if t.grounding_score is not None else "-"
+        table.add_row(t.request_id, t.tenant_id, t.terminal_status, g_str, f"{t.total_ms:.0f}", t.question[:60])
+    console.print(table)

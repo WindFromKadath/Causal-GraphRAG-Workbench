@@ -57,6 +57,70 @@ def detect_refusal(prediction: str) -> bool:
     return len(matches) >= 2 and len(text) <= 420
 
 
+def compute_retrieval_ir_metrics(
+    retrieved_ids: list[str],
+    gold_ids: set[str] | list[str],
+    *,
+    ks: tuple[int, ...] = (1, 3, 5, 10),
+) -> dict[str, float]:
+    """Stage 4.3 IR metrics: compute Hit@K and MRR@K over ranked chunk/document IDs."""
+    gold = {str(g).strip() for g in gold_ids if str(g).strip()}
+    ranked = [str(r).strip() for r in retrieved_ids if str(r).strip()]
+    metrics: dict[str, float] = {}
+    if not gold:
+        for k in ks:
+            metrics[f"hit_at_{k}"] = 0.0
+        metrics[f"mrr_at_{max(ks)}"] = 0.0
+        return metrics
+
+    first_hit_rank: int | None = None
+    for idx, cid in enumerate(ranked, start=1):
+        if cid in gold:
+            first_hit_rank = idx
+            break
+
+    for k in ks:
+        metrics[f"hit_at_{k}"] = 1.0 if (first_hit_rank is not None and first_hit_rank <= k) else 0.0
+    max_k = max(ks)
+    metrics[f"mrr_at_{max_k}"] = (
+        round(1.0 / first_hit_rank, 6) if (first_hit_rank is not None and first_hit_rank <= max_k) else 0.0
+    )
+    return metrics
+
+
+def classify_answerability_v2(
+    *,
+    answer_accuracy: float,
+    semantic_coverage: float,
+    is_refusal: bool,
+    execution_error: bool = False,
+) -> str:
+    """Stage 4.3 tri-state answerability (`FULL` | `PARTIAL` | `NONE` | `EXECUTION_ERROR`)."""
+    if execution_error:
+        return "EXECUTION_ERROR"
+    if is_refusal or (answer_accuracy < 0.25 and semantic_coverage < 0.25):
+        return "NONE"
+    if answer_accuracy >= 0.70 and semantic_coverage >= 0.65:
+        return "FULL"
+    return "PARTIAL"
+
+
+def classify_refusal_kind(
+    prediction: str,
+    *,
+    retrieved_evidence_count: int,
+    retrieval_evidence_recall: float | None = None,
+) -> str:
+    """Distinguish valid business refusal (no supporting evidence) from unwanted semantic refusal."""
+    if not detect_refusal(prediction):
+        return "none"
+    if retrieved_evidence_count == 0 or (
+        retrieval_evidence_recall is not None and retrieval_evidence_recall <= 0.0
+    ):
+        return "business_refusal"
+    return "semantic_refusal"
+
+
 def fbeta_score(tp: int, fp: int, fn: int, beta: float = 1.0) -> float:
     """GraphRAG-Bench official F-beta score over TP/FP/FN statement classifications."""
     if tp == 0 and fp == 0 and fn == 0:
@@ -136,10 +200,16 @@ class JudgeQuestionScore(BaseModel):
     total_claims: int = 0
     token_f1_legacy: float = 0.0
     judge_latency_seconds: float = 0.0
+    # Stage 4.3 Evaluation v2 extensions (100% backward-compatible defaults)
+    answerability: str = "FULL"  # FULL | PARTIAL | NONE | EXECUTION_ERROR
+    refusal_kind: str = "none"  # none | business_refusal | semantic_refusal
+    execution_error: bool = False
+    hit_at_5: float | None = None
+    mrr_at_10: float | None = None
 
 
 class JudgeModeSummary(BaseModel):
-    """Aggregated 4D Judge metrics for a single retrieval/reasoning mode."""
+    """Aggregated 4D + Stage 4.3 v2 Judge metrics for a single retrieval/reasoning mode."""
 
     mode: str
     total: int
@@ -153,6 +223,14 @@ class JudgeModeSummary(BaseModel):
     avg_token_f1_legacy: float
     avg_judge_latency_seconds: float
     by_question_type: dict[str, dict[str, float]] = Field(default_factory=dict)
+    # Stage 4.3 Evaluation v2: strict separation of execution failures vs answer quality
+    valid_scored_count: int = 0
+    execution_error_count: int = 0
+    answerability_distribution: dict[str, float] = Field(default_factory=dict)
+    business_refusal_rate: float = 0.0
+    semantic_refusal_rate: float = 0.0
+    avg_hit_at_5: float | None = None
+    avg_mrr_at_10: float | None = None
 
 
 class JudgeReport(BaseModel):
@@ -345,16 +423,34 @@ class LLMJudgeEvaluator:
                 faithfulness = 0.0
 
         elapsed = time.perf_counter() - t0
+        ans_acc_clamped = round(max(0.0, min(1.0, ans_acc)), 4)
+        sem_cov_clamped = round(max(0.0, min(1.0, sem_cov)), 4)
+        ev_rec_clamped = round(max(0.0, min(1.0, retrieval_evidence_recall)), 4)
+        answerability = classify_answerability_v2(
+            answer_accuracy=ans_acc_clamped,
+            semantic_coverage=sem_cov_clamped,
+            is_refusal=is_refusal,
+            execution_error=False,
+        )
+        refusal_kind = (
+            classify_refusal_kind(
+                pred_clean,
+                retrieved_evidence_count=len(contexts),
+                retrieval_evidence_recall=ev_rec_clamped,
+            )
+            if is_refusal
+            else "none"
+        )
         return JudgeQuestionScore(
             question_id=question_id,
             question_type=question_type,
             mode=mode,
-            answer_accuracy=round(max(0.0, min(1.0, ans_acc)), 4),
+            answer_accuracy=ans_acc_clamped,
             factuality_f1=round(max(0.0, min(1.0, fact_f1)), 4),
             semantic_similarity=round(max(0.0, min(1.0, sem_sim)), 4),
             faithfulness=round(max(0.0, min(1.0, faithfulness)), 4),
-            semantic_coverage=round(max(0.0, min(1.0, sem_cov)), 4),
-            retrieval_evidence_recall=round(max(0.0, min(1.0, retrieval_evidence_recall)), 4),
+            semantic_coverage=sem_cov_clamped,
+            retrieval_evidence_recall=ev_rec_clamped,
             is_refusal=is_refusal,
             tp_count=tp,
             fp_count=fp,
@@ -363,13 +459,20 @@ class LLMJudgeEvaluator:
             total_claims=total_claims,
             token_f1_legacy=round(token_f1_legacy, 4),
             judge_latency_seconds=round(elapsed, 3),
+            answerability=answerability,
+            refusal_kind=refusal_kind,
+            execution_error=False,
         )
 
 
 def _summarize_mode_scores(mode: str, scores: list[JudgeQuestionScore]) -> JudgeModeSummary:
-    n = len(scores) or 1
+    # Stage 4.3 Evaluation v2: strictly separate execution errors from quality averages
+    valid_scores = [s for s in scores if not s.execution_error]
+    err_count = len(scores) - len(valid_scores)
+    n = len(valid_scores) or 1
+
     by_type_groups: dict[str, list[JudgeQuestionScore]] = {}
-    for s in scores:
+    for s in valid_scores:
         by_type_groups.setdefault(s.question_type, []).append(s)
 
     by_type: dict[str, dict[str, float]] = {}
@@ -383,20 +486,39 @@ def _summarize_mode_scores(mode: str, scores: list[JudgeQuestionScore]) -> Judge
             "refusal_rate": round(sum(1 for x in grp if x.is_refusal) / m, 4),
         }
 
+    ans_dist: dict[str, float] = {}
+    if scores:
+        for state in ("FULL", "PARTIAL", "NONE", "EXECUTION_ERROR"):
+            ans_dist[state] = round(sum(1 for x in scores if x.answerability == state) / len(scores), 4)
+
+    hit5_vals = [x.hit_at_5 for x in valid_scores if x.hit_at_5 is not None]
+    mrr10_vals = [x.mrr_at_10 for x in valid_scores if x.mrr_at_10 is not None]
+
     return JudgeModeSummary(
         mode=mode,
         total=len(scores),
-        avg_answer_accuracy=round(sum(x.answer_accuracy for x in scores) / n, 4),
-        avg_factuality_f1=round(sum(x.factuality_f1 for x in scores) / n, 4),
-        avg_semantic_similarity=round(sum(x.semantic_similarity for x in scores) / n, 4),
-        avg_faithfulness=round(sum(x.faithfulness for x in scores) / n, 4),
-        avg_semantic_coverage=round(sum(x.semantic_coverage for x in scores) / n, 4),
+        valid_scored_count=len(valid_scores),
+        execution_error_count=err_count,
+        avg_answer_accuracy=round(sum(x.answer_accuracy for x in valid_scores) / n, 4),
+        avg_factuality_f1=round(sum(x.factuality_f1 for x in valid_scores) / n, 4),
+        avg_semantic_similarity=round(sum(x.semantic_similarity for x in valid_scores) / n, 4),
+        avg_faithfulness=round(sum(x.faithfulness for x in valid_scores) / n, 4),
+        avg_semantic_coverage=round(sum(x.semantic_coverage for x in valid_scores) / n, 4),
         avg_retrieval_evidence_recall=round(
-            sum(x.retrieval_evidence_recall for x in scores) / n, 4
+            sum(x.retrieval_evidence_recall for x in valid_scores) / n, 4
         ),
-        refusal_rate=round(sum(1 for x in scores if x.is_refusal) / n, 4),
-        avg_token_f1_legacy=round(sum(x.token_f1_legacy for x in scores) / n, 4),
-        avg_judge_latency_seconds=round(sum(x.judge_latency_seconds for x in scores) / n, 3),
+        refusal_rate=round(sum(1 for x in valid_scores if x.is_refusal) / n, 4),
+        business_refusal_rate=round(
+            sum(1 for x in valid_scores if x.refusal_kind == "business_refusal") / n, 4
+        ),
+        semantic_refusal_rate=round(
+            sum(1 for x in valid_scores if x.refusal_kind == "semantic_refusal") / n, 4
+        ),
+        answerability_distribution=ans_dist,
+        avg_hit_at_5=round(sum(hit5_vals) / len(hit5_vals), 4) if hit5_vals else None,
+        avg_mrr_at_10=round(sum(mrr10_vals) / len(mrr10_vals), 4) if mrr10_vals else None,
+        avg_token_f1_legacy=round(sum(x.token_f1_legacy for x in valid_scores) / n, 4),
+        avg_judge_latency_seconds=round(sum(x.judge_latency_seconds for x in valid_scores) / n, 3),
         by_question_type=by_type,
     )
 

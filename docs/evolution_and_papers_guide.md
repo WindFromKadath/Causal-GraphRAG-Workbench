@@ -304,7 +304,7 @@ flowchart LR
 | `NetworkXGraphStore` (`graph.json`) | `BaseGraphStore` + `Entity` / `Relation` / `HyperEdge` | **Neo4j 5.26 Community（✅ Stage 4.1 已落地）**（Docker 端口 `27474/27687`，复用本机镜像） | `:HyperEdge` 中介节点 + ACL 预过滤 Cypher + 按 `acl_partition` 分区隔离社区摘要（保留 NetworkX 作单测替身） |
 | `LocalVectorStore` (`.npy` + Okapi BM25) | `BaseVectorStore` + `TextChunk` | **PostgreSQL 16 + `pgvector 0.8.7`（✅ Stage 4.1 已落地）**（Docker 端口 `25432`） | `halfvec(1024)` HNSW（省 50% 内存，`EXPLAIN` `0.163ms` 命中）+ `hnsw.iterative_scan` + `tsvector`/CJK RRF + `index_registry` 模型指纹强校验 + 业务/ACL/A-MEM 同库 ACID |
 | `nomic-embed-text` + 固定滑窗切分 | `BaseEmbeddingClient` + `DocumentIngestor` | **`qwen3-embedding:0.6b`（✅ Stage 4.1 CPU 主跑）** + **多格式解析（Docling / PyMuPDF / python-docx）+ Parent-Child + 面包屑前缀 + 三道质检（✅ Stage 4.2 已落地）** | Fix A/B 0 显存占用；表格 `<=600 tok` 原子保留、`>600 tok` 续拼表头；Python AST 切分；SHA-256 哈希去重跳过未变块 |
-| 手动线性/分支编排 + 全量 `build` | `GraphRAGPipeline` + `VerifiedMemoryStore` | **Redis Streams / DLQ 异步增量 Worker + `active_version` 原子切换 + Reconciliation 对账（✅ Stage 4.2 已落地）** + **薄 `LangGraph`（`PostgresSaver` + HITL）+ ONNX CPU `bge-reranker-v2-m3`（Stage 4.3）** | 幂等去重、乱序版本拦截、PG+Neo4j 同步软删除、过期租约回收；Stage 4.3 接入 CPU Rerank 与 Corrective RAG |
+| 手动线性/分支编排 + 全量 `build` | `GraphRAGPipeline` + `VerifiedMemoryStore` | **Redis Streams / DLQ 异步增量 Worker（✅ Stage 4.2）** + **薄 `LangGraph`（`PostgresSaver` + Corrective RAG + Grounding 自愈 + HITL `interrupt()`）+ 纯 CPU ONNX/词面精排 + PG/OTel Trace + 评测 v2（✅ Stage 4.3 已落地）** | 幂等去重、乱序拦截、双库软删；0 显存 CPU 精排 + Redis 缓存；有环自愈与人工审批持久化；执行失败与质量分母分离 |
 | `cli.py` + 草台 Streamlit | `QueryResult` + `tot_tree_exporter.py` | **FastAPI（Async REST + SSE 流式推送）+ React 19 / TypeScript / Vite / Tailwind / Cytoscape.js / ECharts**（Stage 4.4–4.5） | 5 大企业控制台工作区 + OpenTelemetry/Langfuse Trace + 三态可答性（`FULL/PARTIAL/NONE`）与 `MRR@K` 评测 |
 
 ### Stage 4.1 — 企业级双存储底座（PostgreSQL 16 + pgvector 0.8 + Neo4j 5.26 + Redis 7）
@@ -334,6 +334,19 @@ flowchart LR
     - 双栏含表 PDF 自动识别空白第 2 页标记 `partial_available (missing_pages=[2])`，DOCX 完整保留表头与章节，伪造 MIME PDF 与高乱码率文本 **100% 拦截**；
     - Redis Streams 增量闭环：`v1` 重复投递触发 `idempotent_noop`（`0` 重算）；`v2` 仅修改 1 个章节时未改 2 个章节 **100% 跳过重算 Embedding**（`reused=2, computed=1`）；乱序 `v1` 到达被 `stale_version_ignored` 拦截；在线查询 **0 双版本污染** 且一键回滚 `v2→v1→v2` 秒级生效；
     - 模拟 Worker 崩溃超时租约被 `reconcile` 成功回收（`reclaimed=1`）；`delete` 事件同步软删 PG 切片与 Neo4j 实体/关系，双库检索立即归 `0`。
+
+### Stage 4.3 — 检索漏斗升级、薄 LangGraph 有环编排、PG/OTel 可观测与评测 v2
+- **升级动机（Why）**：
+  - 手动线性的 `GraphRAGPipeline.query()` 缺少“证据不足重查（Corrective RAG）”“引用未扎根自动自愈”“高风险 A-MEM 写回前人工暂停审批（HITL）”等有环状态机能力；同时评测需要 `Hit@K / MRR@K`、三态可答性（`FULL/PARTIAL/NONE`）与执行失败分母隔离，上线排查需要节点级瀑布耗时与 OpenTelemetry 链路。
+- **核心工程设计与落点（Code Map）**：
+  - 检索漏斗：`src/llm_graphrag_kg/retrieval/query_rewrite.py`（Multi-Query + Self-Query，强制保留原 Query `1.25×` 锚定权重 + Corrective 扩写）与 `retrieval/reranker.py`（`CrossEncoderReranker`：纯 CPU `onnxruntime` + Rust `tokenizers` 零 PyTorch/零显存精排，自动支持本地 ONNX 模型与 `bilingual_lexical_cross` 零下载降级，内置 Redis Rerank 缓存）。
+  - 薄 `LangGraph` 编排层：`src/llm_graphrag_kg/agent/graph.py`（`GraphRAGAgentRunner`）：100% 复用 Stage 3 纯 Python 推理核，仅用 `StateGraph` + `PostgresSaver`/`MemorySaver` + `interrupt()`/`Command(resume=...)` 实现 8 节点有环状态机（含 Corrective RAG 循环、Grounding 自愈循环、HITL 写回审批与 `stream_events()` SSE 事件流）。
+  - 可观测与评测 v2：`src/llm_graphrag_kg/observability/tracing.py`（PostgreSQL `request_traces` 账本 + OpenTelemetry `graphrag.request` / `graphrag.node.*` Span 采集）、`eval/llm_judge.py` v2（`compute_retrieval_ir_metrics`、`classify_answerability_v2`、`classify_refusal_kind` 与 `_summarize_mode_scores` 执行失败隔离），接入 `cli.py`（`agent-query` / `traces`）与 `tests/test_stage4_3_retrieval_langgraph_eval.py`。
+- **真机实测证据（Evidence）**：
+  - `ruff` 0 告警，全仓 `pytest` **62/62** 通过（覆盖 Corrective 循环、Grounding 自愈、HITL 批准/拒绝、SSE 事件流、ONNX CPU 逻辑、OTel Spans 与 Eval v2）。
+  - **真机 Docker（PG16 `PostgresSaver` + `request_traces` + Neo4j 5.26 + Redis 7 + Ollama `qwen3-embedding:0.6b` CPU + `qwen3.5:9b` GPU）实测**：
+    - 30 候选 CPU 精排 `2.96 ms`（Redis 缓存命中 `0.69 ms`），`0` 显存占用；
+    - `fault_diag` 全链路实跑成功在 `hitl_memory_approval` 触发 `interrupt(amem_writeback_approval)` 持久化至 PG，经 `resume_hitl()` 恢复并完成 `100.0%` Grounding 问答，PG `request_traces` 成功入库且 OpenTelemetry 捕获 `8` 条完整节点 Span。
 
 ---
 

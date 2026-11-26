@@ -6,6 +6,22 @@
 
 ---
 
+## [2026-11-26] Stage 4.3 Retrieval Funnel, Thin LangGraph Cyclic Orchestration (HITL/PostgresSaver), PG/OTel Tracing & Eval v2
+- **提交类型**：`feat`
+- **变更背景**：完成 `docs/stage4_enterprise_refactor_plan.md` 规划的 **Stage 4.3**：在不侵入 Stage 3 纯 Python 推理核、不引入 `langchain` 旧 Chain 的前提下，构建完整企业级检索漏斗（Multi-Query/Self-Query + 纯 CPU ONNX/词面精排 + Redis 缓存）、薄 `LangGraph` 有环状态机（Corrective RAG 循环 + Grounding 自愈循环 + `PostgresSaver` 持久化 + HITL `interrupt()` 审批）、PG `request_traces` + OpenTelemetry 全链路追踪与 Evaluation v2。
+- **主要修改**：
+  - 新增 `src/llm_graphrag_kg/retrieval/query_rewrite.py` 与 `reranker.py`：实现原 Query `1.25×` 锚定保护的 Multi-Query / Self-Query / Corrective 扩写，以及基于 `onnxruntime (CPUExecutionProvider)` + Rust `tokenizers` 的零 PyTorch / 零 8 GB 显存精排器（带 `bilingual_lexical_cross` 离线降级与 Redis Rerank 缓存）。
+  - 新增 `src/llm_graphrag_kg/agent/graph.py`（`GraphRAGAgentRunner`）：基于 `langgraph` + `langgraph-checkpoint-postgres` 编排 `acl_guard → query_rewrite → recall_and_rerank → [expand_query] → graph_reason → [self_heal_grounding] → writeback_gate → [hitl_memory_approval interrupt()] → commit_memory → record_trace` 有环状态机，并提供 `run()`、`resume_hitl()` 与 SSE 节点流 `stream_events()`。
+  - 新增 `src/llm_graphrag_kg/observability/tracing.py`（`TraceRecorder`、`RequestTraceRecord`、`WaterfallStep`）：实现 OpenTelemetry Span 采集与 PostgreSQL `request_traces` 账本持久化（含幂等平滑建表/加列 `ensure_pg_schema()`）；同步更新 `deploy/postgres/init.sql`。
+  - 升级 `src/llm_graphrag_kg/eval/llm_judge.py`（v2）：新增 `compute_retrieval_ir_metrics`（`Hit@K / MRR@K`）、`classify_answerability_v2`（`FULL/PARTIAL/NONE/EXECUTION_ERROR`）、`classify_refusal_kind`（`business_refusal` vs `semantic_refusal`）及 `_summarize_mode_scores` 执行失败与质量分母严格分离。
+  - 扩展 `pyproject.toml`、`config.py`（同步修复 `load_config` 透传 `memory` 配置）、`.env.example`、`cli.py`（新增 `agent-query` 与 `traces` 命令），新增离线单元测试 `tests/test_stage4_3_retrieval_langgraph_eval.py`，并同步更新 `docs/stage4_enterprise_refactor_plan.md` 与 `docs/evolution_and_papers_guide.md`。
+- **验证方式**：
+  - 静态与离线测试：`ruff check src tests scripts` 0 告警，`pytest -q` **62/62** 全部通过，`scripts/privacy_check.py` 扫描通过（108 文件）。
+  - 真机 Docker 验收（PG16 `PostgresSaver` + `request_traces` + Neo4j 5.26 + Redis 7 + Ollama `qwen3-embedding:0.6b` CPU + `qwen3.5:9b` GPU）：30 候选 CPU 精排 `2.96 ms`（Redis 缓存命中 `0.69 ms`），0 显存争抢；`fault_diag` 实跑成功触发 `amem_writeback_approval` HITL 断点持久化与 `Command(resume=...)` 恢复、`100.0%` Grounding、PG `request_traces` 入库且捕获 `8` 条 OpenTelemetry Spans。
+- **隐私与迁移自检**：所有连接串与 OTel 配置均经 `.env.example` 脱敏占位，无密钥、本机绝对路径或私有数据入库。
+
+---
+
 ## [2026-11-26] Stage 4.2 Document Governance & Async Idempotent Incremental Worker - 三道质检、多格式 Parent-Child 父子分块与 Redis Streams 增量更新闭环
 - **提交类型**：`feat`
 - **变更背景**：完成 `docs/stage4_enterprise_refactor_plan.md` 规划的 **Stage 4.2**，彻底取代简单固定滑窗切分与全量重建模式，落地符合企业级生产标准的“多格式版面解析 + 三道质检 + 分格式 Parent-Child + 面包屑前缀”与“Redis Streams + SHA-256 哈希去重 + 乐观租约状态机 + `active_version` 原子切换 + PG/Neo4j 同步软删除 + Reconciliation 对账”完整增量管道。
