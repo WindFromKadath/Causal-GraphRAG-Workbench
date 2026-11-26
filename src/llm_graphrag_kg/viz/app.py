@@ -138,11 +138,11 @@ def _render_html_embed(html: str, *, height: int) -> None:
 
 def _init_page() -> None:
     st.set_page_config(
-        page_title="LLM-GraphRAG-KG 可视化核验与思维回放工作台",
+        page_title="Causal-GraphRAG-Workbench 可视化核验与思维回放工作台",
         page_icon="🕸️",
         layout="wide",
     )
-    st.title("🕸️ LLM + GraphRAG + KG 可视化核验与思维回放工作台")
+    st.title("🕸️ Causal-GraphRAG-Workbench 可视化核验与思维回放工作台")
     st.caption(
         "Stage 2.4 闭环工作台：Ego-Graph 单设备聚焦 → 显性 Graph-CoT / Graph-ToT 思维回放与 "
         "GroundingAudit → SHACL-lite 全量本体质检 → 原文切片溯源"

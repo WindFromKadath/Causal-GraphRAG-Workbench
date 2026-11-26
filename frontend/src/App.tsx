@@ -68,8 +68,8 @@ export function App() {
       <aside className="lg:w-64 shrink-0 border-b lg:border-b-0 lg:border-r border-slate-800/80 p-4 flex flex-col justify-between gap-4 bg-slate-950/30">
         <div className="space-y-5">
           <div>
-            <div className="text-sm font-bold tracking-tight text-sky-400">LLM-GraphRAG-KG</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">Stage 4.5 Enterprise Console</div>
+            <div className="text-sm font-bold tracking-tight text-sky-400">Causal-GraphRAG-Workbench</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">Enterprise &amp; Causal Console</div>
           </div>
 
           <nav className="space-y-1">

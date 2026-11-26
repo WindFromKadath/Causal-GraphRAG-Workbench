@@ -1,4 +1,4 @@
-# LLM-GraphRAG-KG 工程部署与迁移指南
+# Causal-GraphRAG-Workbench 工程部署与迁移指南
 
 本文档面向将本框架从个人开发机迁移至 **Linux 服务器、工控边缘主机、内网离线环境或团队协作环境** 的工程部署场景，覆盖环境交付、推理服务配置、存储演进、Web 服务化与安全治理。
 
@@ -23,7 +23,7 @@
 ```bash
 # 1. 拉取代码（仅包含脱敏代码、配置模板与示例语料）
 git clone <your-repo-url>
-cd LLM-GraphRAG-KG
+cd Causal-GraphRAG-Workbench
 
 # 2. 按需同步依赖（严格遵循 uv.lock 与 .python-version）
 # 仅核心 CLI 管线（适合无界面服务器/定时任务节点）：

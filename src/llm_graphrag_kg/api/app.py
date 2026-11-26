@@ -82,10 +82,10 @@ def create_app(
                 svc.close()
 
     app = FastAPI(
-        title="LLM-GraphRAG-KG Enterprise API",
-        version="4.4.0",
+        title="Causal-GraphRAG-Workbench API",
+        version="4.5.0",
         description=(
-            "Enterprise GraphRAG + Knowledge Graph production service: "
+            "Causal-GraphRAG-Workbench production service: "
             "PG16/pgvector + Neo4j 5.26 + Redis Streams + Thin LangGraph (Corrective RAG & HITL) + SSE."
         ),
         lifespan=lifespan,

@@ -78,7 +78,7 @@ def render_pyvis_html(
     trace: SubgraphTrace | None = None,
     allowed_entity_ids: set[str] | None = None,
     height: str = "780px",
-    title: str = "LLM-GraphRAG-KG Interactive Verification View",
+    title: str = "Causal-GraphRAG-Workbench Interactive Verification View",
 ) -> str:
     """Render an interactive Vis.js HTML string with provenance tooltips and optional trace highlight."""
     nx_graph = graph_store.to_networkx()
@@ -244,7 +244,7 @@ def export_pyvis_html(
     trace: SubgraphTrace | None = None,
     allowed_entity_ids: set[str] | None = None,
     height: str = "780px",
-    title: str = "LLM-GraphRAG-KG Interactive Verification View",
+    title: str = "Causal-GraphRAG-Workbench Interactive Verification View",
 ) -> Path:
     """Write interactive Vis.js HTML graph to disk."""
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -6,6 +6,17 @@
 
 ---
 
+## [2026-11-26] Chore: Rename Repository to `Causal-GraphRAG-Workbench` - 仓库与全栈品牌更名并追加 `causal-graphrag` CLI 别名
+- **提交类型**：`chore`
+- **变更背景**：项目已从早期 LLM + GraphRAG + KG 演示演进为涵盖多租户文档治理、双存储引擎、LangGraph 有环纠偏、因果图谱与全栈评测台的可验证推理工作台，正式将 GitHub 仓库与全栈品牌更名为 **`Causal-GraphRAG-Workbench`**，同时保留内部 Python 包名 `llm_graphrag_kg` 与现有 Docker 数据卷以保证零破坏平滑升级。
+- **主要修改**：
+  - 通过 `gh repo rename` 将 GitHub 仓库重命名为 `WindFromKadath/Causal-GraphRAG-Workbench` 并同步更新本地 `origin` 远端 URL。
+  - 在 `pyproject.toml` 新增 `causal-graphrag` CLI 入口（同时保留旧命令 `llm-graphrag-kg` 向后兼容），同步更新 `README.md`、`README.zh-CN.md`、核心文档标题与 `.env.example`。
+  - 统一 FastAPI 网关标题（`Causal-GraphRAG-Workbench API`）、CLI 面板标题、React 19 控制台页面/侧边栏品牌与离线核验工作台/HTML 导出默认标题。
+- **验证方式**：`uv sync --extra enterprise --extra dev` 刷新 `causal-graphrag` CLI 入口；`ruff check`、`pytest -q`（63/63）、`tsc --noEmit`、`vite build` 与 `scripts/privacy_check.py` 全量通过。
+
+---
+
 ## [2026-11-26] Docs: Bilingual README Overhaul - 对齐工程与科研项目模板重构英文主入口 `README.md` 与中文同步版 `README.zh-CN.md`
 - **提交类型**：`docs`
 - **变更背景**：原 `README.md` 仍以早期 Stage 1–3 中文流水账方式组织，缺少清晰的系统全景架构、接口/性能/故障契约表、离线与企业全栈双路径快速开始、已核查评测与边界局限声明以及 GitHub 英文主入口规范。参考工程+科研混合项目模板进行精炼重构，保持内容严谨清晰、无多余展示附件。

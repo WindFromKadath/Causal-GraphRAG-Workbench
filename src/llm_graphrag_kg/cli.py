@@ -1,4 +1,4 @@
-"""Command-line interface for LLM-GraphRAG-KG."""
+"""Command-line interface for Causal-GraphRAG-Workbench."""
 
 from __future__ import annotations
 
@@ -46,8 +46,8 @@ from llm_graphrag_kg.viz.schema_validator import validate_kg_shacl_lite
 from llm_graphrag_kg.viz.tot_tree_exporter import export_tot_tree_html
 
 app = typer.Typer(
-    name="llm-graphrag-kg",
-    help="Modular LLM + GraphRAG + Knowledge Graph framework with visual verification.",
+    name="causal-graphrag",
+    help="Causal-GraphRAG-Workbench: Verifiable Causal KG, GraphRAG & Agentic Reasoning CLI.",
     no_args_is_help=True,
 )
 console = Console()
@@ -725,7 +725,7 @@ def ui(
         Panel(
             f"Launching visual verification workbench at http://{host}:{port}\n"
             "Press Ctrl+C to stop.",
-            title="LLM-GraphRAG-KG Workbench",
+            title="Causal-GraphRAG-Workbench",
             border_style="cyan",
         )
     )
@@ -1817,7 +1817,7 @@ def serve_cmd(
             f"FastAPI Docs: http://{host}:{port}/docs\n"
             f"Backends: vector={cfg.env.vector_backend} | graph={cfg.env.graph_backend} | "
             f"checkpointer={cfg.env.langgraph_checkpointer}",
-            title="LLM-GraphRAG-KG Enterprise API (Stage 4.4)",
+            title="Causal-GraphRAG-Workbench API",
             border_style="cyan",
         )
     )

@@ -1,8 +1,8 @@
-# LLM-GraphRAG-KG
+# Causal-GraphRAG-Workbench
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-**LLM-GraphRAG-KG** is a modular, production-ready **LLM + GraphRAG + Knowledge Graph** framework combining research-grade explicit reasoning (`HippoRAG 2 PPR`, `Graph-CoT v2`, `Graph-ToT v2 BFS/DFS`, `HyperGraph`, 4-gate anti-poisoning `A-MEM`, `SHACL-lite`, 4D `LLM-as-a-Judge`) with an enterprise full-stack architecture (**PostgreSQL 16 + pgvector 0.8**, **Neo4j 5.26**, **Redis 7 Streams**, **Thin LangGraph + HITL**, **FastAPI REST/SSE**, and a **React 19 + TypeScript Console**).
+**Causal-GraphRAG-Workbench** *(formerly `LLM-GraphRAG-KG`)* is a modular, verifiable **Causal Knowledge Graph + GraphRAG + Agentic Reasoning** workbench combining research-grade explicit reasoning (`HippoRAG 2 PPR`, `Graph-CoT v2`, `Graph-ToT v2 BFS/DFS`, `HyperGraph`, 4-gate anti-poisoning `A-MEM`, `SHACL-lite`, 4D `LLM-as-a-Judge`) with an enterprise full-stack architecture (**PostgreSQL 16 + pgvector 0.8**, **Neo4j 5.26**, **Redis 7 Streams**, **Thin LangGraph + HITL**, **FastAPI REST/SSE**, and a **React 19 + TypeScript Console**).
 
 ---
 
@@ -49,7 +49,7 @@ flowchart TB
 
 | Dimension | Contract for Current Version (`Stage 4.5`) |
 |---|---|
-| **CLI (`llm-graphrag-kg`)** | Offline & enterprise commands: `check-llm`, `check-embed`, `check-infra`, `build`, `query`, `agent-query`, `audit`, `shacl-check`, `export-viz`, `migrate-enterprise`, `ingest-enterprise`, `worker-run`, `reconcile`, `dlq-list`, `traces`, `serve`, `ui`, `privacy-check`. |
+| **CLI (`causal-graphrag` / `llm-graphrag-kg`)** | Offline & enterprise commands: `check-llm`, `check-embed`, `check-infra`, `build`, `query`, `agent-query`, `audit`, `shacl-check`, `export-viz`, `migrate-enterprise`, `ingest-enterprise`, `worker-run`, `reconcile`, `dlq-list`, `traces`, `serve`, `ui`, `privacy-check`. |
 | **HTTP / SSE API** | FastAPI v1 (`/api/v1/*`, OpenAPI at `/docs`): 20 endpoints covering health/infra/tenants, document ingestion/multipart upload/rollback/soft-delete, Redis queue/DLQ/reconcile, Neo4j graph/ego/hyperedges/SHACL, LangGraph sync QA, `POST /api/v1/agent/stream` (`text/event-stream`), HITL resume, memories, traces, and Eval v2 metrics. |
 | **Multi-Tenant & ACL** | Tenant (`X-Tenant-Id`) + RBAC (`X-ACL-Roles`) pre-filtering enforced inside PostgreSQL SQL (`tenant_id`, `is_deleted = FALSE`, `acl && $roles`, `JOIN documents` on `active_version`) and Neo4j Cypher (`Entity`, `RELATES_TO`, `HyperEdge`, `acl_partition` `Community`). Verified `0` leaks across all 10 surfaces. |
 | **Verified Performance & VRAM Guardrails** | `qwen3-embedding:0.6b` defaults to Fix A (`num_ctx=2048`, `4.6 GB → 985 MB`) + Fix B (`num_gpu=0` CPU-first, `0 MiB VRAM`, ~55–65 ms/query; optional GPU `num_gpu=99`); PG `halfvec(1024)` HNSW `EXPLAIN ANALYZE` verified `0.163 ms`; CPU reranking 30 candidates `2.96 ms` (`0.69 ms` Redis cache hit). |
@@ -66,15 +66,15 @@ flowchart TB
 Requirements: Python `>=3.12` and `uv`.
 
 ```bash
-git clone https://github.com/WindFromKadath/LLM-GraphRAG-KG.git
-cd LLM-GraphRAG-KG
+git clone https://github.com/WindFromKadath/Causal-GraphRAG-Workbench.git
+cd Causal-GraphRAG-Workbench
 uv sync --extra dev
 
 # Build and inspect KG on included sanitized sample corpus (offline mock mode)
-uv run llm-graphrag-kg build --input data/sample --provider mock
-uv run llm-graphrag-kg audit
-uv run llm-graphrag-kg export-viz
-uv run llm-graphrag-kg query "How does GraphRAG combine a knowledge graph for multi-hop reasoning?" --mode ppr --reasoning auto --provider mock
+uv run causal-graphrag build --input data/sample --provider mock
+uv run causal-graphrag audit
+uv run causal-graphrag export-viz
+uv run causal-graphrag query "How does GraphRAG combine a knowledge graph for multi-hop reasoning?" --mode ppr --reasoning auto --provider mock
 ```
 
 - **Sample Input**: `data/sample/` (3 docs) and `data/sample_fault_diagnosis/` (6 industrial diagnostics docs).
@@ -89,22 +89,22 @@ Requirements: Docker Desktop / Engine, Node.js `>=20`, and local Ollama (`ollama
 # 1. Install enterprise Python extras and start PG16 (25432), Neo4j (27474/27687), Redis (26379)
 uv sync --extra enterprise --extra dev
 docker compose up -d
-uv run llm-graphrag-kg check-infra
+uv run causal-graphrag check-infra
 
 # 2. Migrate a local KG into PG16 (halfvec 1024d) + Neo4j 5.26 with SHACL-lite check
-uv run llm-graphrag-kg migrate-enterprise --config-file configs/fault_diagnosis.yaml --tenant fault_diag --acl "public,engineer" --clear-target
+uv run causal-graphrag migrate-enterprise --config-file configs/fault_diagnosis.yaml --tenant fault_diag --acl "public,engineer" --clear-target
 
 # 3. Build the React 19 + TypeScript Console and start FastAPI (serves both UI and OpenAPI)
 npm --prefix frontend install
 npm --prefix frontend run build
-uv run llm-graphrag-kg serve --host 127.0.0.1 --port 8000 --vector-backend pgvector --graph-backend neo4j --checkpointer postgres
+uv run causal-graphrag serve --host 127.0.0.1 --port 8000 --vector-backend pgvector --graph-backend neo4j --checkpointer postgres
 ```
 
 - **Enterprise Console**: `http://127.0.0.1:8000` (5 workspaces: SSE Chat/HITL, Document Governance, Cytoscape Neo4j/HyperEdge Explorer, ECharts Eval Lab v2, Trace Waterfall & A-MEM Audit)
 - **OpenAPI Docs**: `http://127.0.0.1:8000/docs`
 - **Neo4j Browser**: `http://127.0.0.1:27474` (connect to `bolt://127.0.0.1:27687`)
 - **Frontend Hot-Reload Dev Mode** (optional, separate terminal): `npm --prefix frontend run dev` → `http://127.0.0.1:5173`
-- **Legacy Offline Workbench** (optional): `uv sync --extra viz && uv run --extra viz llm-graphrag-kg ui`
+- **Legacy Offline Workbench** (optional): `uv sync --extra viz && uv run --extra viz causal-graphrag ui`
 
 ---
 
@@ -132,14 +132,14 @@ Run the full local verification suite after changes:
 ```bash
 uv run ruff check src tests scripts
 uv run pytest -q
-uv run llm-graphrag-kg privacy-check --staged --require-changelog
+uv run causal-graphrag privacy-check --staged --require-changelog
 npm --prefix frontend run typecheck && npm --prefix frontend run build
 ```
 
 Verified baseline (`a70e56a`): `ruff` 0 errors, `pytest` **63/63 passed**, `tsc --noEmit` 0 errors, `vite build` clean (`2,152` modules), `privacy-check` PASS.
 
 ```text
-LLM-GraphRAG-KG/
+Causal-GraphRAG-Workbench/
 ├── .env.example                 # Redacted environment template (copy to .env; never commit .env)
 ├── CHANGELOG.md                 # Atomic per-commit maintenance & verification log
 ├── LICENSE                      # MIT License (code & original docs)
@@ -165,7 +165,7 @@ LLM-GraphRAG-KG/
 
 ## Privacy, Contributions and License
 
-- **Privacy & Commit Hygiene**: Never commit `.env`, `.vscode/`, `data/private/`, `storage/`, `outputs/`, `frontend/node_modules/`, or `frontend/dist/`. Every commit must update [CHANGELOG.md](CHANGELOG.md) and pass `uv run llm-graphrag-kg privacy-check --staged --require-changelog`.
-- **Issues & Contributions**: Report reproducible issues or proposals via [GitHub Issues](https://github.com/WindFromKadath/LLM-GraphRAG-KG/issues) with sanitized inputs and environment details (no credentials or private paths). Keep both `README.md` and `README.zh-CN.md` synchronized when public interfaces change.
+- **Privacy & Commit Hygiene**: Never commit `.env`, `.vscode/`, `data/private/`, `storage/`, `outputs/`, `frontend/node_modules/`, or `frontend/dist/`. Every commit must update [CHANGELOG.md](CHANGELOG.md) and pass `uv run causal-graphrag privacy-check --staged --require-changelog`.
+- **Issues & Contributions**: Report reproducible issues or proposals via [GitHub Issues](https://github.com/WindFromKadath/Causal-GraphRAG-Workbench/issues) with sanitized inputs and environment details (no credentials or private paths). Keep both `README.md` and `README.zh-CN.md` synchronized when public interfaces change.
 - **License**: Original source code and documentation are released under the **MIT License** ([LICENSE](LICENSE)).
 - **Third-Party Terms & Acknowledgements**: Upstream datasets, models, and services remain governed by their own licenses (including IBM FailureSensorIQ under Apache-2.0, GraphRAG-Bench, OREDA/IndustryAssetEQA, Qwen3 models, Neo4j Community, PostgreSQL/pgvector, Redis, and LangGraph). Key inspirations include Microsoft GraphRAG & LazyGraphRAG, HippoRAG / HippoRAG 2, Graph-CoT, ToT / ToG-2, HyperGraphRAG, A-MEM, CausalRAG, and W3C SHACL.

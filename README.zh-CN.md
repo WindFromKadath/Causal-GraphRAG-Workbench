@@ -1,8 +1,8 @@
-# LLM-GraphRAG-KG
+# Causal-GraphRAG-Workbench
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-**LLM-GraphRAG-KG** 是一个模块化、可落地生产的 **LLM + GraphRAG + 知识图谱（KG）** 全栈框架，将研究级显性推理内核（`HippoRAG 2 PPR`、`Graph-CoT v2`、`Graph-ToT v2 BFS/DFS`、`HyperGraph`、4 重防投毒 `A-MEM`、`SHACL-lite`、官方 4D `LLM-as-a-Judge`）与企业级工程架构（**PostgreSQL 16 + pgvector 0.8**、**Neo4j 5.26**、**Redis 7 Streams**、**薄 LangGraph + HITL**、**FastAPI REST/SSE** 与 **React 19 + TypeScript 控制台**）有机统一。
+**Causal-GraphRAG-Workbench**（原名 `LLM-GraphRAG-KG`）是一个模块化、可验证的 **因果知识图谱 + GraphRAG + Agentic 推理工作台**，将研究级显性推理内核（`HippoRAG 2 PPR`、`Graph-CoT v2`、`Graph-ToT v2 BFS/DFS`、`HyperGraph`、4 重防投毒 `A-MEM`、`SHACL-lite`、官方 4D `LLM-as-a-Judge`）与企业级工程架构（**PostgreSQL 16 + pgvector 0.8**、**Neo4j 5.26**、**Redis 7 Streams**、**薄 LangGraph + HITL**、**FastAPI REST/SSE** 与 **React 19 + TypeScript 控制台**）有机统一。
 
 ---
 
@@ -49,7 +49,7 @@ flowchart TB
 
 | 维度 | 当前版本（`Stage 4.5`）的明确约定 |
 |---|---|
-| **CLI (`llm-graphrag-kg`)** | 离线与企业命令：`check-llm`、`check-embed`、`check-infra`、`build`、`query`、`agent-query`、`audit`、`shacl-check`、`export-viz`、`migrate-enterprise`、`ingest-enterprise`、`worker-run`、`reconcile`、`dlq-list`、`traces`、`serve`、`ui`、`privacy-check`。 |
+| **CLI (`causal-graphrag` / `llm-graphrag-kg`)** | 离线与企业命令：`check-llm`、`check-embed`、`check-infra`、`build`、`query`、`agent-query`、`audit`、`shacl-check`、`export-viz`、`migrate-enterprise`、`ingest-enterprise`、`worker-run`、`reconcile`、`dlq-list`、`traces`、`serve`、`ui`、`privacy-check`。 |
 | **HTTP / SSE 协议** | FastAPI v1（`/api/v1/*`，OpenAPI 文档位于 `/docs`）：共 20 个端点，覆盖健康/设施/租户发现、文档治理入库/Multipart 上传/回滚/软删、Redis 队列/DLQ/对账、Neo4j 图谱/Ego-Graph/超边/SHACL、LangGraph 同步问答、`POST /api/v1/agent/stream`（`text/event-stream`）、HITL 恢复、A-MEM 记忆、Trace 与评测 v2。 |
 | **多租户与 ACL 隔离** | 租户（`X-Tenant-Id`）与角色（`X-ACL-Roles`）预过滤强下推至 PostgreSQL SQL（`tenant_id`、`is_deleted = FALSE`、`acl && $roles`、`JOIN documents` 强校 `active_version`）与 Neo4j Cypher（节点、关系、超边及 `acl_partition` 社区）。10 个读写面实测 **`0` 越权泄漏**。 |
 | **实测性能与显存边界** | `qwen3-embedding:0.6b` 默认启用 Fix A（`num_ctx=2048`，内存由 `4.6 GB → 985 MB`）+ Fix B（`num_gpu=0` 纯 CPU 主跑，`0 MiB` 显存占用，~55–65 ms/问，可选切 GPU `99`）；PG `halfvec(1024)` HNSW `EXPLAIN ANALYZE` 实测 `0.163 ms`；30 候选 CPU 精排 `2.96 ms`（Redis 缓存命中 `0.69 ms`）。 |
@@ -66,15 +66,15 @@ flowchart TB
 环境要求：Python `>=3.12` 与 `uv`。
 
 ```bash
-git clone https://github.com/WindFromKadath/LLM-GraphRAG-KG.git
-cd LLM-GraphRAG-KG
+git clone https://github.com/WindFromKadath/Causal-GraphRAG-Workbench.git
+cd Causal-GraphRAG-Workbench
 uv sync --extra dev
 
 # 使用仓库内置脱敏示例语料执行离线构建、审计与问答
-uv run llm-graphrag-kg build --input data/sample --provider mock
-uv run llm-graphrag-kg audit
-uv run llm-graphrag-kg export-viz
-uv run llm-graphrag-kg query "GraphRAG 如何结合知识图谱解决多跳推理问题？" --mode ppr --reasoning auto --provider mock
+uv run causal-graphrag build --input data/sample --provider mock
+uv run causal-graphrag audit
+uv run causal-graphrag export-viz
+uv run causal-graphrag query "GraphRAG 如何结合知识图谱解决多跳推理问题？" --mode ppr --reasoning auto --provider mock
 ```
 
 - **公开示例输入**：`data/sample/`（3 篇）与 `data/sample_fault_diagnosis/`（6 篇工业故障诊断脱敏语料）。
@@ -89,22 +89,22 @@ uv run llm-graphrag-kg query "GraphRAG 如何结合知识图谱解决多跳推�
 # 1. 安装企业扩展依赖并拉起 PG16 (25432)、Neo4j 5.26 (27474/27687)、Redis 7 (26379)
 uv sync --extra enterprise --extra dev
 docker compose up -d
-uv run llm-graphrag-kg check-infra
+uv run causal-graphrag check-infra
 
 # 2. 将本地知识图谱迁移写入 PG16 (halfvec 1024d) + Neo4j 5.26
-uv run llm-graphrag-kg migrate-enterprise --config-file configs/fault_diagnosis.yaml --tenant fault_diag --acl "public,engineer" --clear-target
+uv run causal-graphrag migrate-enterprise --config-file configs/fault_diagnosis.yaml --tenant fault_diag --acl "public,engineer" --clear-target
 
 # 3. 构建 React 19 + TypeScript 控制台并启动 FastAPI（单端口同时托管控制台与 API）
 npm --prefix frontend install
 npm --prefix frontend run build
-uv run llm-graphrag-kg serve --host 127.0.0.1 --port 8000 --vector-backend pgvector --graph-backend neo4j --checkpointer postgres
+uv run causal-graphrag serve --host 127.0.0.1 --port 8000 --vector-backend pgvector --graph-backend neo4j --checkpointer postgres
 ```
 
 - **企业 Web 控制台**：`http://127.0.0.1:8000`（5 大工作区：SSE 问答/HITL、文档治理、Cytoscape Neo4j/超边浏览器、ECharts 评测实验室 v2、Trace 瀑布耗时 & A-MEM 审计）
 - **OpenAPI 接口文档**：`http://127.0.0.1:8000/docs`
 - **Neo4j Browser 可视化**：`http://127.0.0.1:27474`（连接地址填写 `bolt://127.0.0.1:27687`）
 - **前端热更新开发模式**（可选，另开终端）：`npm --prefix frontend run dev` → `http://127.0.0.1:5173`
-- **旧版离线工作台**（可选）：`uv sync --extra viz && uv run --extra viz llm-graphrag-kg ui`
+- **旧版离线工作台**（可选）：`uv sync --extra viz && uv run --extra viz causal-graphrag ui`
 
 ---
 
@@ -132,14 +132,14 @@ uv run llm-graphrag-kg serve --host 127.0.0.1 --port 8000 --vector-backend pgvec
 ```bash
 uv run ruff check src tests scripts
 uv run pytest -q
-uv run llm-graphrag-kg privacy-check --staged --require-changelog
+uv run causal-graphrag privacy-check --staged --require-changelog
 npm --prefix frontend run typecheck && npm --prefix frontend run build
 ```
 
 已核查基线（`a70e56a`）：`ruff` 0 告警、`pytest` **63/63 通过**、`tsc --noEmit` 0 错误、`vite build` 通过（`2,152` 模块）、`privacy-check` PASS。
 
 ```text
-LLM-GraphRAG-KG/
+Causal-GraphRAG-Workbench/
 ├── .env.example                 # 脱敏环境变量模板（复制为 .env 使用；严禁提交 .env）
 ├── CHANGELOG.md                 # 每次提交同步更新的维护日志与验证证据总账
 ├── LICENSE                      # MIT 开源许可（代码与原创文档）
@@ -165,7 +165,7 @@ LLM-GraphRAG-KG/
 
 ## 隐私规范、反馈与许可
 
-- **隐私与提交规范**：严禁提交 `.env`、`.vscode/`、`data/private/`、`storage/`、`outputs/`、`frontend/node_modules/` 与 `frontend/dist/`。每次有意义的提交需同步更新 [CHANGELOG.md](CHANGELOG.md) 并通过 `uv run llm-graphrag-kg privacy-check --staged --require-changelog`。
-- **问题反馈与贡献**：请通过 [GitHub Issues](https://github.com/WindFromKadath/LLM-GraphRAG-KG/issues) 提交可复现问题或改进建议，报告中请移除任何凭据与本机私人路径。公开接口或使用步骤变更时请同步更新 `README.md` 与 `README.zh-CN.md`。
+- **隐私与提交规范**：严禁提交 `.env`、`.vscode/`、`data/private/`、`storage/`、`outputs/`、`frontend/node_modules/` 与 `frontend/dist/`。每次有意义的提交需同步更新 [CHANGELOG.md](CHANGELOG.md) 并通过 `uv run causal-graphrag privacy-check --staged --require-changelog`。
+- **问题反馈与贡献**：请通过 [GitHub Issues](https://github.com/WindFromKadath/Causal-GraphRAG-Workbench/issues) 提交可复现问题或改进建议，报告中请移除任何凭据与本机私人路径。公开接口或使用步骤变更时请同步更新 `README.md` 与 `README.zh-CN.md`。
 - **许可协议**：本项目原创源码与文档采用 **MIT License**（见 [LICENSE](LICENSE)）。
 - **第三方材料与致谢**：第三方数据集、模型与基础组件各自适用其原有条款（包括 IBM FailureSensorIQ 的 Apache-2.0 协议、GraphRAG-Bench、OREDA/IndustryAssetEQA、Qwen3 模型、Neo4j Community、PostgreSQL/pgvector、Redis 与 LangGraph）。方法设计主要参考 Microsoft GraphRAG & LazyGraphRAG、HippoRAG / HippoRAG 2、Graph-CoT、ToT / ToG-2、HyperGraphRAG、A-MEM、CausalRAG 与 W3C SHACL。
