@@ -20,13 +20,13 @@ from llm_graphrag_kg.pipelines.extraction import KnowledgeExtractor
 from llm_graphrag_kg.pipelines.hipporag import SemanticGraphIndex, build_synonym_edges
 from llm_graphrag_kg.pipelines.hypergraph import mine_joint_hyperedges
 from llm_graphrag_kg.pipelines.ingestion import DocumentIngestor
-from llm_graphrag_kg.pipelines.memory_store import VerifiedMemoryStore
 from llm_graphrag_kg.pipelines.retriever import GraphRAGRetriever
 from llm_graphrag_kg.providers.factory import (
     create_embedding_client,
     create_fast_llm_client,
     create_graph_store,
     create_llm_client,
+    create_memory_store,
     create_vector_store,
 )
 
@@ -48,10 +48,10 @@ class GraphRAGPipeline:
         self.llm = llm or create_llm_client(config)
         self.planner_llm = planner_llm if planner_llm is not None else create_fast_llm_client(config)
         self.embedder = embedder or create_embedding_client(config)
-        self.graph_store = graph_store or create_graph_store()
-        self.vector_store = vector_store or create_vector_store()
+        self.graph_store = graph_store or create_graph_store(config)
+        self.vector_store = vector_store or create_vector_store(config)
         self.semantic_index = SemanticGraphIndex()
-        self.memory_store = VerifiedMemoryStore()
+        self.memory_store = create_memory_store(config)
 
     def build(
         self,
@@ -72,8 +72,8 @@ class GraphRAGPipeline:
         chunks = ingestor.chunk_documents(documents)
 
         # Reset fresh stores for deterministic rebuild
-        self.graph_store = create_graph_store()
-        self.vector_store = create_vector_store()
+        self.graph_store = create_graph_store(self.config)
+        self.vector_store = create_vector_store(self.config)
         self.semantic_index = SemanticGraphIndex()
 
         # 1. Embed and store chunks
@@ -161,15 +161,22 @@ class GraphRAGPipeline:
 
         return compute_audit_stats(self.graph_store, self.vector_store, doc_count=len(documents))
 
+    def _uses_enterprise_storage(self) -> bool:
+        return (
+            self.config.env.vector_backend.strip().lower() == "pgvector"
+            or self.config.env.graph_backend.strip().lower() == "neo4j"
+        )
+
     def load(self, storage_dir: Path | None = None) -> int:
-        """Load persisted graph, vector, semantic, and verified memory stores from disk."""
+        """Load persisted graph, vector, semantic, and verified memory stores."""
         src_dir = storage_dir or self.config.storage_path
         self.graph_store.load(src_dir)
         self.vector_store.load(src_dir)
-        self.semantic_index.load(src_dir)
+        if not self._uses_enterprise_storage():
+            self.semantic_index.load(src_dir)
         self.memory_store.load(src_dir)
         manifest_path = src_dir / "manifest.json"
-        if manifest_path.is_file():
+        if not self._uses_enterprise_storage() and manifest_path.is_file():
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             return int(manifest.get("doc_count", 0))
         return len({c.doc_id for c in self.vector_store.get_all_chunks()})

@@ -6,6 +6,22 @@
 
 ---
 
+## [2026-11-26] Stage 4.1 Enterprise Storage Foundation & Embedding Guardrails - PG16+pgvector `halfvec(1024)` + Neo4j 5.26 + Redis 7 双存储底座与 `qwen3-embedding:0.6b` CPU 主跑
+- **提交类型**：`feat`
+- **变更背景**：完成 Stage 4 企业级技术栈重构总规划及第一个完整可验收子阶段 **Stage 4.1**：在保留离线单测 `LocalVectorStore/NetworkXGraphStore` 零依赖替身的前提下，完整落地 Docker Compose 企业基础设施、`qwen3-embedding:0.6b` Fix A (`num_ctx=2048`) + Fix B (`num_gpu=0` CPU 主跑) 双防呆护栏、PostgreSQL 16 + `pgvector 0.8` 混合向量/元数据/A-MEM 存储与 Neo4j 5.26 图谱/超边/ACL 分区社区存储。
+- **主要修改**：
+  - 架构规划与嵌入护栏：新增 `docs/stage4_enterprise_refactor_plan.md`；升级 `src/llm_graphrag_kg/providers/embedding/ollama_native.py`、`config.py`、`.env.example` 与 `tests/test_stage3_1_retrieval.py`，默认切换 `qwen3-embedding:0.6b` 并默认启用 Fix A（`num_ctx=2048`，将内存由 `4.6 GB` 压至 `985 MB`）+ Fix B（`num_gpu=0` 纯 CPU 主跑，0 MiB 显存争抢，支持可选 MRL 弹性降维与一键切 GPU）。
+  - 企业基础设施与依赖：新增 `docker-compose.yml`（PG16 `25432`、Neo4j 5.26 `27474/27687`、Redis 7 `26379`，与现有容器零冲突）、`deploy/postgres/init.sql`（`index_registry`、`documents`、`parent_chunks`、`child_chunks` `halfvec(1024)` HNSW + GIN、`verified_memories`、`audit_logs`、`request_traces`）并在 `pyproject.toml` 新增 `[enterprise]` 可选依赖组（`psycopg[binary]`、`pgvector`、`neo4j`、`redis`）。
+  - 企业存储适配器与迁移链路：新增 `src/llm_graphrag_kg/providers/storage/pgvector_store.py`（`PgVectorStore` + `PgVerifiedMemoryStore`）、`src/llm_graphrag_kg/providers/storage/neo4j_store.py`（`Neo4jGraphStore`，含 `:HyperEdge` 中介节点、ACL 预过滤 Cypher 与 `acl_partition` 社区隔离）及 `src/llm_graphrag_kg/pipelines/migrate_enterprise.py`；接入 `providers/factory.py`、`pipelines/workflow.py`、`cli.py`（新增 `check-infra`、`migrate-enterprise` 与 `query/shacl-check --vector-backend/--graph-backend/--tenant/--acl`）并补充离线单元测试 `tests/test_stage4_1_enterprise_storage.py`。
+  - 同步更新 `docs/evolution_and_papers_guide.md`、`docs/stage4_enterprise_refactor_plan.md` 与 `README.md`。
+- **验证方式**：
+  - 静态与离线测试：`ruff check src tests scripts` 0 告警，`pytest -q` **53/53** 全部通过，`scripts/privacy_check.py` 扫描通过（98 文件）。
+  - 真机 Docker 验收：`check-infra` 三服务全绿（`PostgreSQL 16.16 + pgvector 0.8.7`、`Neo4j 5.26.32`、`Redis 7.4.12`）；`EXPLAIN (ANALYZE, BUFFERS)` 实证命中 `Index Scan using idx_child_chunks_hnsw_cosine`（`0.163 ms`）；`index_registry` 实证拦截模型/维度错配；10 面多租户 & RBAC/ACL 隔离测试实现 **`0` 越权泄漏** + 软删除审计生效。
+  - 双图谱实测迁移与问答：工业 OREDA `fmea_oreda`（87 切片 / 87 实体 / 1,013 关系）迁入 PG16+Neo4j 达 **`SHACL-lite 100.0% PASS`**；`fault_diag`（15 切片 / 51 实体 / 94 关系 / 7 超边 / 1 记忆）在 PG16 + Neo4j + `qwen3-embedding:0.6b` (CPU) + `qwen3.5:9b` (GPU) 端到端实跑 `ppr + auto -> tot` 诊断，命中 4 条 Neo4j 超边 + 1 条 PG A-MEM，达到 **`100.0%` Grounding（0 幻觉引用）**。
+- **隐私与迁移自检**：Docker 数据卷隔离在命名卷与 `.gitignore` 中，`.env.example` 与默认本地开发配置无任何真实密钥或本机绝对路径泄露。
+
+---
+
 ## [2026-11-26] Stage 3.4 HyperGraph Multi-Condition HyperEdges, Gated A-MEM Verified Write-Back & Workbench Tab 7
 - **提交类型**：`feat`
 - **变更背景**：完成第三阶段收官目标 Stage 3.4，引入 N 元多条件联合超边建模（HyperGraphRAG）与经四重防投毒门禁审核的自演化情景记忆写回（A-MEM），并在学习手册中补充面向企业级技术栈重构的 Protocol → Production 迁移蓝图。

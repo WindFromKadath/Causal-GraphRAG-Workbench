@@ -8,6 +8,7 @@ import sqlite3
 import time
 import urllib.error
 import urllib.request
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -34,17 +35,18 @@ class EmbeddingDiskCache:
         return sqlite3.connect(str(self.cache_path), timeout=30.0)
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS embeddings (
-                    cache_key TEXT PRIMARY KEY,
-                    model TEXT NOT NULL,
-                    dim INTEGER NOT NULL,
-                    vec BLOB NOT NULL
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS embeddings (
+                        cache_key TEXT PRIMARY KEY,
+                        model TEXT NOT NULL,
+                        dim INTEGER NOT NULL,
+                        vec BLOB NOT NULL
+                    )
+                    """
                 )
-                """
-            )
 
     @staticmethod
     def make_key(model: str, text: str) -> str:
@@ -57,7 +59,7 @@ class EmbeddingDiskCache:
         keys = [self.make_key(model, t) for t in texts]
         unique_keys = list(dict.fromkeys(keys))
         found: dict[str, list[float]] = {}
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             # Query in slices to stay well below SQLite variable limits
             for start in range(0, len(unique_keys), 400):
                 batch_keys = unique_keys[start : start + 400]
@@ -78,25 +80,28 @@ class EmbeddingDiskCache:
         for text, vec in items:
             arr = np.asarray(vec, dtype=np.float32)
             rows.append((self.make_key(model, text), model, int(arr.size), arr.tobytes()))
-        with self._connect() as conn:
-            conn.executemany(
-                "INSERT OR REPLACE INTO embeddings (cache_key, model, dim, vec) VALUES (?, ?, ?, ?)",
-                rows,
-            )
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO embeddings (cache_key, model, dim, vec) VALUES (?, ?, ?, ?)",
+                    rows,
+                )
 
 
 class OllamaNativeEmbeddingClient:
-    """Adapter calling Ollama native `/api/embed` with batching, truncation, and disk cache."""
+    """Adapter calling Ollama native `/api/embed` with Fix A (`num_ctx`) & Fix B (`num_gpu`) controls."""
 
     def __init__(
         self,
         *,
         base_url: str = "http://127.0.0.1:11434",
-        model: str = "nomic-embed-text",
+        model: str = "qwen3-embedding:0.6b",
         timeout: int = 120,
         batch_size: int = 32,
         truncate: bool = True,
-        num_gpu: int | None = None,
+        num_gpu: int | None = 0,
+        num_ctx: int | None = 2048,
+        dimensions: int | None = None,
         cache_dir: Path | None = None,
     ) -> None:
         self.root_url = _normalize_ollama_root(base_url)
@@ -106,8 +111,23 @@ class OllamaNativeEmbeddingClient:
         self.batch_size = max(1, int(batch_size))
         self.truncate = truncate
         self.num_gpu = num_gpu
+        self.num_ctx = num_ctx
+        self.dimensions = dimensions if (dimensions is not None and dimensions > 0) else None
         self.cache = EmbeddingDiskCache(cache_dir / "embed_cache.sqlite3") if cache_dir else None
         self.last_telemetry: dict[str, Any] = {}
+
+    @property
+    def _cache_model_key(self) -> str:
+        return f"{self.model}@d{self.dimensions}" if self.dimensions else self.model
+
+    def _apply_mrl_truncate(self, vec: list[float]) -> list[float]:
+        if self.dimensions is None or len(vec) <= self.dimensions:
+            return vec
+        arr = np.asarray(vec[: self.dimensions], dtype=np.float32)
+        norm = float(np.linalg.norm(arr))
+        if norm > 1e-12:
+            arr = arr / norm
+        return [float(x) for x in arr.tolist()]
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -115,15 +135,16 @@ class OllamaNativeEmbeddingClient:
 
         t0 = time.perf_counter()
         normalized_texts = [t if t.strip() else " " for t in texts]
+        cm_key = self._cache_model_key
         cached_by_key: dict[str, list[float]] = {}
         if self.cache is not None:
-            cached_by_key = self.cache.get_many(self.model, normalized_texts)
+            cached_by_key = self.cache.get_many(cm_key, normalized_texts)
 
         # Deduplicate uncached texts so identical strings are embedded once
         missing_texts: list[str] = []
         seen_missing: set[str] = set()
         for txt in normalized_texts:
-            key = EmbeddingDiskCache.make_key(self.model, txt)
+            key = EmbeddingDiskCache.make_key(cm_key, txt)
             if key not in cached_by_key and key not in seen_missing:
                 seen_missing.add(key)
                 missing_texts.append(txt)
@@ -135,19 +156,21 @@ class OllamaNativeEmbeddingClient:
             vecs = self._embed_batch(batch)
             api_calls += 1
             for txt, vec in zip(batch, vecs, strict=True):
-                key = EmbeddingDiskCache.make_key(self.model, txt)
+                key = EmbeddingDiskCache.make_key(cm_key, txt)
                 cached_by_key[key] = vec
                 newly_computed.append((txt, vec))
 
         if self.cache is not None and newly_computed:
-            self.cache.put_many(self.model, newly_computed)
+            self.cache.put_many(cm_key, newly_computed)
 
         results = [
-            cached_by_key[EmbeddingDiskCache.make_key(self.model, txt)] for txt in normalized_texts
+            cached_by_key[EmbeddingDiskCache.make_key(cm_key, txt)] for txt in normalized_texts
         ]
         dim = len(results[0]) if results else 0
         self.last_telemetry = {
             "model": self.model,
+            "num_gpu": self.num_gpu,
+            "num_ctx": self.num_ctx,
             "total_texts": len(texts),
             "cache_hits": len(texts) - len(missing_texts),
             "api_calls": api_calls,
@@ -162,8 +185,13 @@ class OllamaNativeEmbeddingClient:
             "input": batch,
             "truncate": self.truncate,
         }
+        options: dict[str, Any] = {}
         if self.num_gpu is not None:
-            payload["options"] = {"num_gpu": self.num_gpu}
+            options["num_gpu"] = self.num_gpu
+        if self.num_ctx is not None:
+            options["num_ctx"] = self.num_ctx
+        if options:
+            payload["options"] = options
 
         req = urllib.request.Request(
             self.endpoint,
@@ -195,7 +223,7 @@ class OllamaNativeEmbeddingClient:
                 f"Unexpected Ollama /api/embed response: expected {len(batch)} vectors, "
                 f"got {type(embeddings).__name__}."
             )
-        return [[float(x) for x in vec] for vec in embeddings]
+        return [self._apply_mrl_truncate([float(x) for x in vec]) for vec in embeddings]
 
     def health_check(self) -> tuple[bool, str]:
         try:
@@ -203,7 +231,7 @@ class OllamaNativeEmbeddingClient:
             dim = len(vecs[0]) if vecs else 0
             return True, (
                 f"Ollama native embedder ready: model={self.model} dim={dim} "
-                f"num_gpu={self.num_gpu} endpoint={self.endpoint}"
+                f"num_gpu={self.num_gpu} num_ctx={self.num_ctx} endpoint={self.endpoint}"
             )
         except Exception as exc:  # noqa: BLE001
             return False, f"Embedding health check failed ({self.model}): {exc}"

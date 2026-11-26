@@ -129,11 +129,30 @@ class EnvSettings(BaseSettings):
     embedding_provider: str = "local_hash"
     embedding_base_url: str = "http://127.0.0.1:11434/v1"
     embedding_api_key: str = "local-no-key"
-    embedding_model: str = "nomic-embed-text"
+    embedding_model: str = "qwen3-embedding:0.6b"
     embedding_timeout: int = 120
     embedding_batch_size: int = 32
-    embedding_num_gpu: int | None = None
+    # Fix B (primary CPU-first default): pin embedding to CPU (0 VRAM) so qwen3.5:9b @ 16k keeps full headroom
+    embedding_num_gpu: int | None = 0
+    # Fix A (KV buffer cap): shrink qwen3-embedding:0.6b footprint from 4.6 GB (32K) -> 985 MB (2K)
+    embedding_num_ctx: int | None = 2048
+    embedding_dimensions: int | None = None
     embedding_cache_dir: str | None = None
+
+    # Stage 4.1 Enterprise Storage Backends (default to zero-dep local/networkx for offline tests)
+    vector_backend: str = "local"  # local | pgvector
+    graph_backend: str = "networkx"  # networkx | neo4j
+    postgres_dsn: str = "postgresql://graphrag:graphrag_dev_pass@127.0.0.1:25432/graphrag_kg"
+    pgvector_dim: int = 1024
+    pgvector_ef_search: int = 80
+    pgvector_iterative_scan: str = "strict_order"
+    neo4j_uri: str = "bolt://127.0.0.1:27687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "graphrag_dev_pass"
+    neo4j_database: str = "neo4j"
+    redis_url: str = "redis://127.0.0.1:26379/0"
+    default_tenant_id: str = "default"
+    default_acl_roles: str = "public,internal"
 
 
 class AppConfig(BaseModel):
@@ -182,8 +201,14 @@ class AppConfig(BaseModel):
             "embedding_base_url": self.env.embedding_base_url,
             "embedding_model": self.env.embedding_model,
             "embedding_num_gpu": self.env.embedding_num_gpu,
+            "embedding_num_ctx": self.env.embedding_num_ctx,
+            "embedding_dimensions": self.env.embedding_dimensions,
             "embedding_batch_size": self.env.embedding_batch_size,
             "embedding_api_key": mask_secret(self.env.embedding_api_key),
+            "vector_backend": self.env.vector_backend,
+            "graph_backend": self.env.graph_backend,
+            "neo4j_uri": self.env.neo4j_uri,
+            "default_tenant_id": self.env.default_tenant_id,
             "paths": self.paths.model_dump(),
         }
 

@@ -1,0 +1,72 @@
+# Enterprise infrastructure stack for LLM-GraphRAG-KG (Stage 4.1+)
+# Dedicated localhost ports avoid conflicts with other local Neo4j/Postgres containers:
+#   - PostgreSQL 16 + pgvector 0.8 : 127.0.0.1:25432
+#   - Neo4j 5.26 Community         : 127.0.0.1:27474 (HTTP) / 127.0.0.1:27687 (Bolt)
+#   - Redis 7 Alpine (Streams/DLQ) : 127.0.0.1:26379
+#
+# Usage:
+#   docker compose up -d
+#   docker compose ps
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: llm-graphrag-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${GRAPHRAG_PG_DB:-graphrag_kg}
+      POSTGRES_USER: ${GRAPHRAG_PG_USER:-graphrag}
+      POSTGRES_PASSWORD: ${GRAPHRAG_PG_PASSWORD:-graphrag_dev_pass}
+    ports:
+      - "127.0.0.1:25432:5432"
+    volumes:
+      - graphrag_pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${GRAPHRAG_PG_USER:-graphrag} -d ${GRAPHRAG_PG_DB:-graphrag_kg}"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: llm-graphrag-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: ${GRAPHRAG_NEO4J_USER:-neo4j}/${GRAPHRAG_NEO4J_PASSWORD:-graphrag_dev_pass}
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+    ports:
+      - "127.0.0.1:27474:7474"
+      - "127.0.0.1:27687:7687"
+    volumes:
+      - graphrag_neo4j_data:/data
+      - graphrag_neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u ${GRAPHRAG_NEO4J_USER:-neo4j} -p ${GRAPHRAG_NEO4J_PASSWORD:-graphrag_dev_pass} 'RETURN 1;'"]
+      interval: 8s
+      timeout: 10s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: llm-graphrag-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:26379:6379"
+    volumes:
+      - graphrag_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  graphrag_pgdata:
+  graphrag_neo4j_data:
+  graphrag_neo4j_logs:
+  graphrag_redis_data:

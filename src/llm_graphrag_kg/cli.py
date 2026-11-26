@@ -29,6 +29,10 @@ from llm_graphrag_kg.adapters.rdf_fmea import ingest_fmea_rdf_ttl
 from llm_graphrag_kg.config import load_config
 from llm_graphrag_kg.eval.llm_judge import judge_grb_checkpoints
 from llm_graphrag_kg.pipelines.hypergraph import mine_joint_hyperedges
+from llm_graphrag_kg.pipelines.migrate_enterprise import (
+    check_enterprise_infra,
+    migrate_local_storage_to_enterprise,
+)
 from llm_graphrag_kg.pipelines.workflow import GraphRAGPipeline
 from llm_graphrag_kg.providers.factory import create_embedding_client, create_llm_client
 from llm_graphrag_kg.viz.audit_report import export_audit_artifacts
@@ -79,12 +83,30 @@ def check_embed(
     model: Annotated[
         str | None, typer.Option("--model", help="Optional embedding model override.")
     ] = None,
+    num_gpu: Annotated[
+        int | None,
+        typer.Option("--num-gpu", help="Override Ollama embedding num_gpu (0=CPU primary, 99=GPU)."),
+    ] = None,
+    num_ctx: Annotated[
+        int | None,
+        typer.Option("--num-ctx", help="Override Ollama embedding num_ctx (default 2048)."),
+    ] = None,
+    dimensions: Annotated[
+        int | None,
+        typer.Option("--dimensions", help="Optional MRL output dimension truncation (e.g. 768/512)."),
+    ] = None,
     config_file: Annotated[Path | None, typer.Option(help="Optional YAML config path.")] = None,
 ) -> None:
     """Verify dense embedding endpoint connectivity and output vector dimension."""
     cfg = load_config(config_path=config_file, embedding_provider_override=embedder)
     if model:
         cfg.env.embedding_model = model
+    if num_gpu is not None:
+        cfg.env.embedding_num_gpu = num_gpu
+    if num_ctx is not None:
+        cfg.env.embedding_num_ctx = num_ctx
+    if dimensions is not None:
+        cfg.env.embedding_dimensions = dimensions
     client = create_embedding_client(cfg)
     if hasattr(client, "health_check"):
         ok, msg = client.health_check()
@@ -95,6 +117,116 @@ def check_embed(
     console.print(Panel(msg, title="Embedding Connectivity Check", border_style=style))
     if not ok:
         raise typer.Exit(code=1)
+
+
+@app.command("check-infra")
+def check_infra(
+    config_file: Annotated[Path | None, typer.Option(help="Optional YAML config path.")] = None,
+) -> None:
+    """Verify Stage 4.1 enterprise Docker infrastructure (PostgreSQL+pgvector, Neo4j 5.26, Redis 7)."""
+    cfg = load_config(config_path=config_file)
+    items = check_enterprise_infra(cfg)
+    table = Table(title="Stage 4.1 Enterprise Infrastructure Health")
+    table.add_column("Service", style="cyan")
+    table.add_column("Status", style="white")
+    table.add_column("Endpoint", style="dim")
+    table.add_column("Details", style="white")
+    all_ok = True
+    for item in items:
+        all_ok = all_ok and item.ok
+        st = "[green]HEALTHY[/green]" if item.ok else "[red]FAILED[/red]"
+        table.add_row(item.service, st, item.endpoint, item.detail)
+    console.print(table)
+    if not all_ok:
+        raise typer.Exit(code=1)
+
+
+@app.command("migrate-enterprise")
+def migrate_enterprise(
+    config_file: Annotated[
+        Path | None, typer.Option("--config-file", help="YAML config path.")
+    ] = Path("configs/fault_diagnosis.yaml"),
+    storage_dir: Annotated[
+        Path | None, typer.Option("--storage", help="Source local storage dir to migrate.")
+    ] = None,
+    tenant: Annotated[
+        str | None, typer.Option("--tenant", help="Target multi-tenant ID in PG + Neo4j.")
+    ] = None,
+    acl: Annotated[
+        str | None,
+        typer.Option("--acl", help="Comma-separated ACL roles assigned to migrated records."),
+    ] = None,
+    embedder: Annotated[
+        str | None,
+        typer.Option(
+            "--embedder",
+            help="Embedding provider for PG 1024d vectors (default: ollama_native).",
+        ),
+    ] = "ollama_native",
+    embedding_model: Annotated[
+        str | None,
+        typer.Option("--embedding-model", help="Optional embedding model override."),
+    ] = None,
+    clear_target: Annotated[
+        bool,
+        typer.Option("--clear-target", help="Clear target tenant data in PG & Neo4j before migrating."),
+    ] = False,
+    run_shacl: Annotated[
+        bool,
+        typer.Option("--run-shacl", help="Run SHACL-lite validation against migrated Neo4j + PG."),
+    ] = False,
+) -> None:
+    """Migrate a persisted local KG/vector store into PostgreSQL 16 (pgvector) + Neo4j 5.26."""
+    cfg = load_config(
+        config_path=config_file,
+        llm_provider_override="mock",
+        embedding_provider_override=embedder,
+    )
+    if embedding_model:
+        cfg.env.embedding_model = embedding_model
+    target_store = storage_dir or cfg.storage_path
+    report = migrate_local_storage_to_enterprise(
+        target_store,
+        cfg,
+        tenant_id=tenant,
+        acl_roles=acl,
+        clear_target=clear_target,
+    )
+    table = Table(title=f"Stage 4.1 Enterprise Migration ({report.tenant_id})")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Source Storage", report.source_storage)
+    table.add_row("Tenant ID", report.tenant_id)
+    table.add_row("ACL Roles", ", ".join(report.acl_roles))
+    table.add_row("Embedding Model", f"{report.embedding_model} ({report.embedding_dim}d)")
+    table.add_row("Chunks -> PostgreSQL (halfvec)", str(report.chunks_migrated))
+    table.add_row("Entities -> Neo4j", str(report.entities_migrated))
+    table.add_row("Relations -> Neo4j", str(report.relations_migrated))
+    table.add_row("HyperEdges -> Neo4j", str(report.hyperedges_migrated))
+    table.add_row("Communities -> Neo4j", str(report.communities_migrated))
+    table.add_row("Verified Memories -> PG", str(report.memories_migrated))
+    table.add_row("Elapsed", f"{report.elapsed_seconds:.2f}s")
+    console.print(table)
+
+    if run_shacl:
+        cfg.env.vector_backend = "pgvector"
+        cfg.env.graph_backend = "neo4j"
+        cfg.env.default_tenant_id = report.tenant_id
+        cfg.env.default_acl_roles = ",".join(report.acl_roles)
+        pipeline = GraphRAGPipeline(cfg)
+        shacl_rep = validate_kg_shacl_lite(pipeline.graph_store, pipeline.vector_store, cfg)
+        console.print(
+            Panel(
+                f"Status: {shacl_rep.overall_status} | Score: {shacl_rep.compliance_score * 100:.1f}% "
+                f"| Profile: {shacl_rep.profile}",
+                title="Enterprise SHACL-lite Verification (PG + Neo4j)",
+                border_style="green" if shacl_rep.overall_status != "FAIL" else "red",
+            )
+        )
+        if hasattr(pipeline.graph_store, "close"):
+            pipeline.graph_store.close()
+        if shacl_rep.overall_status == "FAIL":
+            raise typer.Exit(code=1)
 
 
 @app.command("build")
@@ -185,15 +317,37 @@ def shacl_check(
     output_file: Annotated[
         Path | None, typer.Option("--output", help="Optional Markdown report output path.")
     ] = None,
+    vector_backend: Annotated[
+        str | None, typer.Option("--vector-backend", help="Override vector backend: local | pgvector")
+    ] = None,
+    graph_backend: Annotated[
+        str | None, typer.Option("--graph-backend", help="Override graph backend: networkx | neo4j")
+    ] = None,
+    tenant: Annotated[
+        str | None, typer.Option("--tenant", help="Override tenant ID for enterprise backends.")
+    ] = None,
+    acl: Annotated[
+        str | None, typer.Option("--acl", help="Override comma-separated ACL roles.")
+    ] = None,
     config_file: Annotated[
         Path | None, typer.Option("--config-file", help="Optional YAML config path.")
     ] = Path("configs/failuresensoriq.yaml"),
 ) -> None:
     """Run 100% full-graph SHACL-lite ontology & provenance compliance audit."""
     cfg = load_config(config_path=config_file, llm_provider_override="mock")
+    if vector_backend:
+        cfg.env.vector_backend = vector_backend
+    if graph_backend:
+        cfg.env.graph_backend = graph_backend
+    if tenant:
+        cfg.env.default_tenant_id = tenant
+    if acl:
+        cfg.env.default_acl_roles = acl
     pipeline = GraphRAGPipeline(cfg)
     pipeline.load(storage_dir)
     report = validate_kg_shacl_lite(pipeline.graph_store, pipeline.vector_store, cfg)
+    if hasattr(pipeline.graph_store, "close"):
+        pipeline.graph_store.close()
 
     table = Table(
         title=(
@@ -316,6 +470,18 @@ def query(
             help="Enable Stage 3.4 gated A-MEM verified memory write-back after grounding check.",
         ),
     ] = False,
+    vector_backend: Annotated[
+        str | None, typer.Option("--vector-backend", help="Override vector backend: local | pgvector")
+    ] = None,
+    graph_backend: Annotated[
+        str | None, typer.Option("--graph-backend", help="Override graph backend: networkx | neo4j")
+    ] = None,
+    tenant: Annotated[
+        str | None, typer.Option("--tenant", help="Override tenant ID for enterprise backends.")
+    ] = None,
+    acl: Annotated[
+        str | None, typer.Option("--acl", help="Override comma-separated ACL roles.")
+    ] = None,
     config_file: Annotated[Path | None, typer.Option(help="Optional YAML config path.")] = None,
 ) -> None:
     """Execute a GraphRAG query and inspect answer, subgraph trace, CoT grounding, and evidences."""
@@ -324,8 +490,19 @@ def query(
         llm_provider_override=provider,
         embedding_provider_override=embedder,
     )
-    # Auto-align embedding provider/model from persisted manifest.json when caller didn't override
-    if embedder is None:
+    if vector_backend:
+        cfg.env.vector_backend = vector_backend
+    if graph_backend:
+        cfg.env.graph_backend = graph_backend
+    if tenant:
+        cfg.env.default_tenant_id = tenant
+    if acl:
+        cfg.env.default_acl_roles = acl
+    # Auto-align embedding provider/model from persisted manifest.json ONLY for local backend
+    if cfg.env.vector_backend.strip().lower() == "pgvector":
+        if embedder is None and cfg.env.embedding_provider.strip().lower() == "local_hash":
+            cfg.env.embedding_provider = "ollama_native"
+    elif embedder is None:
         target_store = storage_dir or cfg.storage_path
         manifest_path = target_store / "manifest.json"
         if manifest_path.is_file():

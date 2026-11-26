@@ -32,14 +32,15 @@ LLM-GraphRAG-KG/
 │   ├── sample/                  # 轻量基础演示语料（3 篇）
 │   └── sample_fault_diagnosis/  # 工程部署与工业故障诊断脱敏语料（6 篇，含多跳因果链）
 ├── docs/
-│   ├── evolution_and_papers_guide.md        # ★ 架构演进总览与论文范式学习手册（Stage 1 → 3.4，持续更新）
+│   ├── evolution_and_papers_guide.md        # ★ 架构演进总览与论文范式学习手册（Stage 1 → 4.5，持续更新）
 │   ├── engineering_deployment.md            # 工程部署、离线迁移与存储演进指南
 │   ├── troubleshooting_diagnosis.md         # 系统故障诊断与排障手册（FD-01 ~ FD-08）
 │   ├── stage2_harness_reasoning_plan.md        # 第二阶段规划：LLM Harness + Compact + 显性 CoT/ToT
 │   ├── benchmark_stage2_1_audit_and_roadmap.md # Stage 2.1 全量四基线评测、差异法证与前沿对标
 │   ├── benchmark_stage2_hard_datasets.md       # 第二阶段收尾：GraphRAG-Bench 双域高难评测与边界总结
 │   ├── benchmark_stage3_base_model.md          # Stage 3.0 基础模型基准：本地 Ollama 多上下文吞吐与显存选型
-│   └── stage3_nextgen_graphrag_plan.md         # 第三阶段规划：稠密混合检索、自适应路由、HyperGraph与写回记忆
+│   ├── stage3_nextgen_graphrag_plan.md         # 第三阶段规划（已完成）：稠密混合检索、路由、Judge、超边与A-MEM
+│   └── stage4_enterprise_refactor_plan.md      # ★ 第四阶段规划（待推进）：PG+pgvector、Neo4j、LangGraph、FastAPI与React重构
 ├── scripts/                     # 隐私与提交规范检查工具
 ├── src/llm_graphrag_kg/         # 核心框架源码
 └── tests/                       # 自动化测试套件

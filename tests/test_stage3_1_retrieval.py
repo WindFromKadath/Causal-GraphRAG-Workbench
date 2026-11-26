@@ -142,7 +142,7 @@ def test_ollama_native_embedder_batching_cache_and_factory(tmp_path: Path) -> No
         assert vecs1[0] == vecs1[2]
         # 3 unique texts with batch_size=2 -> 2 HTTP calls, passing num_gpu=0
         assert len(calls) == 2
-        assert calls[0]["options"] == {"num_gpu": 0}
+        assert calls[0]["options"] == {"num_gpu": 0, "num_ctx": 2048}
         assert client.last_telemetry["cache_hits"] == 1
 
         # Second call for identical inputs must hit SQLite cache with 0 HTTP calls
@@ -275,3 +275,52 @@ def test_pipeline_end_to_end_stage3_1_persistence_and_ppr(tmp_path: Path) -> Non
     assert isinstance(stage3_meta, dict)
     assert stage3_meta.get("hybrid_bm25_rrf") is True
     assert any("hybrid_rrf" in ev.matched_via for ev in res.evidences)
+
+
+def test_ollama_native_embedder_fix_a_num_ctx_fix_b_cpu_and_mrl(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+
+    from llm_graphrag_kg.providers.embedding.ollama_native import OllamaNativeEmbeddingClient
+    from llm_graphrag_kg.providers.factory import create_embedding_client
+
+    captured_payloads: list[dict] = []
+
+    class _FakeResp:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self) -> _FakeResp:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def _fake_urlopen(req, timeout=120):
+        payload = json.loads(req.data.decode("utf-8"))
+        captured_payloads.append(payload)
+        vecs = [[0.6, 0.8, 0.0, 0.0] for _ in payload["input"]]
+        return _FakeResp(json.dumps({"embeddings": vecs}).encode("utf-8"))
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    cfg = AppConfig(project_root=tmp_path)
+    cfg.env.embedding_provider = "ollama_native"
+    cfg.env.embedding_model = "qwen3-embedding:0.6b"
+    cfg.env.embedding_dimensions = 2
+
+    client = create_embedding_client(cfg)
+    assert isinstance(client, OllamaNativeEmbeddingClient)
+    # Default config must enforce BOTH Fix B (CPU num_gpu=0) and Fix A (num_ctx=2048)
+    assert client.num_gpu == 0
+    assert client.num_ctx == 2048
+
+    vecs = client.embed(["离心泵轴系不对中"])
+    assert len(vecs) == 1
+    assert len(vecs[0]) == 2  # MRL truncated + re-normalized
+    assert abs((vecs[0][0] ** 2 + vecs[0][1] ** 2) - 1.0) < 1e-5
+    assert captured_payloads[0]["options"] == {"num_gpu": 0, "num_ctx": 2048}

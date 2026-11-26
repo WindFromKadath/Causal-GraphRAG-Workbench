@@ -1,4 +1,4 @@
-# 架构演进总览与论文范式学习手册（Stage 1 → Stage 3.4）
+# 架构演进总览与论文范式学习手册（Stage 1 → Stage 4.5）
 
 > **文档定位**：本手册是 `LLM-GraphRAG-KG` 项目的**持续演进学习总览与论文对照指南**（随每个 Stage 同步更新）。  
 > 面向学习与复盘场景，系统记录每一次架构小升级的 **真实触发痛点（Why）→ 参考论文与核心范式（Paper）→ 项目源码落点（Code）→ 改前/改后实测收益（Evidence）→ 工程避坑心得（Takeaway）**。
@@ -21,8 +21,9 @@ flowchart LR
     S32["Stage 3.2 & v2 论文级基线<br/>路由+并集聚合+迭代CoT+多深度ToT<br/>(4b vs 9b 中间层双模型消融)"]
     S33["Stage 3.3: 官方Judge·OpenIE·RDF<br/>四维语义裁判 + 断点语义抽图<br/>+ 工业 OREDA FMEA_KG.ttl"]
     S34["Stage 3.4: HyperGraph & A-MEM<br/>N元多条件超边 + 4重防投毒写回<br/>+ 7标签页闭环工作台"]
+    S4["Stage 4.1–4.5 (已定型·待推进)<br/>PG16+pgvector · Neo4j 5.26 · Redis Streams<br/>Docling · Qwen3-Emb · BGE-Rerank · LangGraph<br/>FastAPI SSE + React/TS 现代前端"]
 
-    S1 --> S21 --> S22 --> S23 --> S24 --> S30 --> S31 --> S32 --> S33 --> S34
+    S1 --> S21 --> S22 --> S23 --> S24 --> S30 --> S31 --> S32 --> S33 --> S34 --> S4
 ```
 
 ---
@@ -43,6 +44,7 @@ flowchart LR
 | **Stage 3.2+ (v2 基线)** | 已完成 | 论文完整版迭代 `Graph-CoT v2`（`cot_iter`）+ 多深度 `Graph-ToT v2`（`tot_bfs`/`tot_dfs` 真回溯）+ `4b vs 9b` 双模型分层消融 | **Graph-CoT** *(ACL 2024)* + **PoG** *(AAAI 2025)* + **ToT** *(NeurIPS 2023)* + **ToG/ToG-2** *(ICLR 2024/2025)* | 旧 CoT 为单轮结构化生成、旧 ToT 为 Depth-1 扁平展开无真回溯；需量化轻重双模型分工边界 | 同 10 题：`cot_iter` F1 达 **`44.7%`（+8.7pp）**；`tot_bfs/dfs` 检索召回飙至 **`86.7%`**、`tot_dfs` F1 **`41.3%`（+9.9pp）** 触发真回溯 `8/10` 题；量化出 `4b` 净算力快 `15%–24%` 但 8 GB 单卡换模税 `+7.1~11.2s` 的硬件边界 |
 | **Stage 3.3** | 已完成 | 官方口径四维 **LLM-as-a-Judge** + 断点式语义 **OpenIE** + 工业 OREDA `FMEA_KG.ttl` RDF 导入 | **GraphRAG-Bench Eval** + **IndustryAssetEQA** *(ACL 2026)* + **W3C Turtle/SHACL** | 纯 `Token-F1` 易被拒答/同义改写失真；共现边缺语义方向；工业 RDF 无原生入口 | Medical `ppr_cot_iter` 语义 Accuracy **`82.2%`** (+8.0pp) / Faithfulness **`52.3%`** (+20.1pp) / 0% 拒答；Novel `multi_branch` Accuracy **`78.1%`** (+4.8pp)；OpenIE 语义谓词 **`100%`**；`FMEA_KG.ttl` **100% SHACL-lite PASS** |
 | **Stage 3.4** | 已完成 | 轻量 **HyperGraph** 多条件超边 + 4 重防投毒自演化记忆写回（**A-MEM**）+ 工作台 Tab 7 联动 | **HyperGraphRAG** *(NeurIPS 2025)* + **A-MEM** *(NeurIPS 2025)* + **IndustryAssetEQA** | 二元边难表达“多症状联合推出单根因”；历史正确排障经验无法安全沉淀复用 | 故障诊断自动挖掘 `6` 条 / FailureSensorIQ 挖掘 `64` 条 N 元联合超边；4 重门禁 100% 拦截未扎根/拒答/极性矛盾投毒；真机 `tot_dfs --writeback` 写回 `mem_063584d27c0b` 并在二次查询自动召回（4/4 步 `100%` Grounding），全套 `pytest` **45/45** 通过 |
+| **Stage 4.1–4.5** | 规划定型 | 企业级技术栈重构：**PG16+pgvector (`halfvec`) + Neo4j 5.26 + Redis Streams/DLQ + Docling/Parent-Child + `Qwen3-Embedding-0.6B` + ONNX CPU Reranker + 薄 `LangGraph` + FastAPI SSE + React/TS 前端** | **JavaGuide 企业 RAG 生产规范** + **Anthropic Contextual Retrieval** + **LangGraph Stateful HITL** + **Neo4j VectorCypher** | 原型阶段缺少生产级持久化、多租户 ACL 隔离、增量幂等更新、PDF 版面治理、重排漏斗、有环审批编排与现代 Web UI | 详规划见 [stage4_enterprise_refactor_plan.md](stage4_enterprise_refactor_plan.md)（直接在 `master` 按 Stage 4.1 → 4.5 原子推进） |
 
 ---
 
@@ -293,18 +295,31 @@ flowchart LR
 
 ---
 
-## 4. 面向企业级技术栈重构的演进迁移地图（Prototype → Production）
+## 4. 第四阶段企业级重构已锁定技术栈（Prototype → Production）
 
-> 至 Stage 3.4 为止，研究原型阶段（Stage 1 → 3.4）已全部闭环。由于本项目自第一天起即采用 **Ports & Adapters（`Protocol` 解耦）** 架构，下一步向企业级生产技术栈重构时，**核心推理引擎（`reasoning/`）、驾驭层（`harness/`）与评测体系（`eval/`）几乎无需重写**，只需按接口逐层替换底层适配器：
+> 至 Stage 3.4 为止，研究原型阶段（Stage 1 → 3.4）已全部闭环。对照 `JavaGuide` 企业级 RAG 生产标准与本机 8 GB 显存环境，**Stage 4.1 → 4.5 已正式定型**（完整架构、Schema、切分/嵌入规范与 5 阶段验收门禁详见 [stage4_enterprise_refactor_plan.md](stage4_enterprise_refactor_plan.md)），核心推理内核零重写，按 `Protocol` 逐层升级如下：
 
-| 当前原型模块（零外部依赖） | 核心抽象协议 / 数据契约 | 推荐企业级生产技术栈替换方案 | 迁移注意点 |
+| 当前原型模块（Stage 3.4） | 核心抽象协议 / 数据契约 | 已锁定 Stage 4 企业级替换方案 | 关键工程策略 |
 |---|---|---|---|
-| `NetworkXGraphStore` (`graph.json`) | `BaseGraphStore` + `Entity` / `Relation` / `HyperEdge` | **Neo4j / NebulaGraph / Memgraph**（HyperEdge 映射为 `:HyperEdge` 中介节点 + `:CONDITION` / `:TARGET` 边） | 用 Cypher 索引替换内存邻接表；PPR 可直调 Neo4j GDS `gds.pageRank` |
-| `LocalVectorStore` (`.npy` + Okapi BM25) | `BaseVectorStore` + `TextChunk` | **Qdrant / Milvus / Elasticsearch / pgvector+BM25**（原生 Hybrid Dense+Sparse RRF） | 保留 `chunk_id` 与 `source` 字符偏移指针，确保 `GroundingAudit` 零改动 |
-| `VerifiedMemoryStore` (`verified_memories.jsonl`) | `VerifiedMemoryRecord` + `WriteBackGateDecision` | **PostgreSQL（审计表 + JSONB + pgvector）** 或 **Redis + Postgres** | 保留 `valid_from` / `status` / `provenance_run_id` 实现时间旅行与人工审批回滚 |
-| `OllamaNativeClient` / `OpenAICompatClient` | `BaseLLMClient` / `BaseEmbeddingClient` | **vLLM / SGLang / LiteLLM Gateway**（支持 `4b` 中间层 + `9b/72b` 综合层异构并发零换模） | 生产多卡/云网关彻底消除 8 GB 单卡换模税，直接兑现 `4b` 中间层 `15%–24%` 净加速 |
-| `cli.py` + `viz/app.py` (Streamlit) | `GraphRAGPipeline` + `QueryResult` | **FastAPI / LangServe 异步微服务 + Celery/Temporal（OpenIE 离线任务）+ React/Vue 前端** | 复用 `tot_tree_exporter.py` 的 JSON Schema 直接驱动前端 DAG/Tree 交互组件 |
-| `LLMHarness` + `eval/llm_judge.py` | `TraceLedger` + `JudgeReport` | **OpenTelemetry + Langfuse / Arize Phoenix + CI 回归门禁** | 将 `judge-grb` 与 `shacl-check` 接入企业 CI/CD 作为发版质量红线 |
+| `NetworkXGraphStore` (`graph.json`) | `BaseGraphStore` + `Entity` / `Relation` / `HyperEdge` | **Neo4j 5.26 Community（✅ Stage 4.1 已落地）**（Docker 端口 `27474/27687`，复用本机镜像） | `:HyperEdge` 中介节点 + ACL 预过滤 Cypher + 按 `acl_partition` 分区隔离社区摘要（保留 NetworkX 作单测替身） |
+| `LocalVectorStore` (`.npy` + Okapi BM25) | `BaseVectorStore` + `TextChunk` | **PostgreSQL 16 + `pgvector 0.8.7`（✅ Stage 4.1 已落地）**（Docker 端口 `25432`） | `halfvec(1024)` HNSW（省 50% 内存，`EXPLAIN` `0.163ms` 命中）+ `hnsw.iterative_scan` + `tsvector`/CJK RRF + `index_registry` 模型指纹强校验 + 业务/ACL/A-MEM 同库 ACID |
+| `nomic-embed-text` + 固定滑窗切分 | `BaseEmbeddingClient` + `DocumentIngestor` | **`qwen3-embedding:0.6b`（✅ Stage 4.1 已落地 CPU 主跑 `num_gpu=0, num_ctx=2048`）** + **Docling 版面解析 + Parent-Child + 面包屑前缀 + 三道质检（Stage 4.2）** | Fix A 控 KV 至 `985 MB` + Fix B CPU 主跑 `0 MiB VRAM`，中文工业区分度 `2.87×`、跨语言 `4.16×`、`halfvec(f16)` 零损 |
+| 手动线性/分支编排 + 全量 `build` | `GraphRAGPipeline` + `VerifiedMemoryStore` | **薄 `LangGraph`（`PostgresSaver` + HITL `interrupt()`）** + **Redis Streams / DLQ 异步增量 Worker** + **ONNX CPU `bge-reranker-v2-m3`**（Stage 4.2–4.3） | 在线 Corrective RAG 循环与高风险记忆人工审批；CPU Rerank 0 显存争抢；`active_version` 原子切换 + 软删除 |
+| `cli.py` + 草台 Streamlit | `QueryResult` + `tot_tree_exporter.py` | **FastAPI（Async REST + SSE 流式推送）+ React 19 / TypeScript / Vite / Tailwind / Cytoscape.js / ECharts**（Stage 4.4–4.5） | 5 大企业控制台工作区 + OpenTelemetry/Langfuse Trace + 三态可答性（`FULL/PARTIAL/NONE`）与 `MRR@K` 评测 |
+
+### Stage 4.1 — 企业级双存储底座（PostgreSQL 16 + pgvector 0.8 + Neo4j 5.26 + Redis 7）
+- **升级动机（Why）**：
+  - 原型阶段的 `LocalVectorStore (.npy)` 与 `NetworkXGraphStore (graph.json)` 属于单进程全量加载内存文件，缺乏 ACID 事务、多租户隔离、行级 RBAC/ACL Pre-Filter、Embedding 模型指纹强校验、软删除审计与图谱持久化约束。
+- **核心工程设计与落点（Code Map）**：
+  - 基础设施与初始化：`docker-compose.yml`（PG16 `25432`、Neo4j `27474/27687`、Redis `26379`）、`deploy/postgres/init.sql`、`pyproject.toml` `[enterprise]` 依赖组。
+  - PG16 + pgvector 0.8 适配器：`src/llm_graphrag_kg/providers/storage/pgvector_store.py`（`PgVectorStore` + `PgVerifiedMemoryStore`）：使用 `halfvec(1024)` HNSW 索引与 `hnsw.iterative_scan = strict_order`，强制所有查询携带 `tenant_id + is_deleted = FALSE + acl && $roles` 预过滤，并由 `index_registry` 表拦截任何 Embedding 模型/维度错配。
+  - Neo4j 5.26 适配器：`src/llm_graphrag_kg/providers/storage/neo4j_store.py`（`Neo4jGraphStore`）：复合唯一约束 `(tenant_id, entity_id)` / `(tenant_id, hyperedge_id)`，以 `:HyperEdge` 中介节点承接 Stage 3.4 多条件超边，按 `acl_partition` 分区隔离 `:Community` 摘要，并在所有 k-hop Cypher 遍历中强制节点与关系双层 ACL 预过滤。
+  - 工厂路由、迁移与 CLI：`providers/factory.py`（`create_graph_store` / `create_vector_store` / `create_memory_store` 懒加载零循环依赖）、`pipelines/workflow.py`、`pipelines/migrate_enterprise.py`、`cli.py`（`check-infra`、`migrate-enterprise`、`query/shacl-check --vector-backend/--graph-backend/--tenant/--acl`）与 `tests/test_stage4_1_enterprise_storage.py`。
+- **真机实测证据（Evidence）**：
+  - `check-infra` 全健康（`PostgreSQL 16.16 + pgvector 0.8.7`、`Neo4j 5.26.32`、`Redis 7.4.12`）；全仓 `pytest` **53/53** 通过。
+  - `EXPLAIN (ANALYZE, BUFFERS)` 实证命中 **`Index Scan using idx_child_chunks_hnsw_cosine`**（`0.163 ms`）；`index_registry` 实证拦截 `nomic-embed-text (768d)` 混入 `qwen3-embedding:0.6b (1024d)` 索引。
+  - **10 面多租户与 RBAC/ACL 零泄漏测试**：`public` 角色在 PG 稠密/BM25/混合/按 ID 读取/A-MEM 与 Neo4j 实体/查询/k-hop/超边/社区全 10 个接口上 **`0` 越权泄漏**，`admin_only` 全部可见，软删除立即不可见并写入 `audit_logs`。
+  - **端到端业务验收**：OREDA `fmea_oreda`（87 实体 / 1,013 关系 / 87 切片）迁入 PG+Neo4j 达 **`SHACL-lite 100.0% PASS`**；`fault_diag` 在 PG16 + Neo4j 5.26 + `qwen3-embedding:0.6b` (CPU) + `qwen3.5:9b` (GPU) 上跑通 `ppr + auto -> tot` 诊断，命中 4 条 Neo4j 超边 + 1 条 PG A-MEM，`GroundingAudit` 达 **`100.0%`**。
 
 ---
 
