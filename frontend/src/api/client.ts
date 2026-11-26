@@ -64,6 +64,10 @@ export const apiClient = {
     return apiFetch<InfraHealthResponse>("/api/v1/infra/health", session, {}, false);
   },
 
+  listTenants(session: TenantSession) {
+    return apiFetch<{ count: number; tenants: string[] }>("/api/v1/tenants", session, {}, false);
+  },
+
   listDocuments(session: TenantSession, includeDeleted = false) {
     return apiFetch<{ tenant_id: string; count: number; documents: DocumentItem[] }>(
       `/api/v1/documents?include_deleted=${includeDeleted}`,

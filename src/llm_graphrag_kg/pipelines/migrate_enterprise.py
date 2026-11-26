@@ -189,13 +189,10 @@ def migrate_local_storage_to_enterprise(
                 embedding_model=config.env.embedding_model,
             )
 
-        # 4. Migrate Entities, Relations, HyperEdges, ACL-partitioned Communities to Neo4j
-        for ent in entities:
-            neo_store.upsert_entity(ent, tenant_id=tid, acl=roles)
-        for rel in relations:
-            neo_store.upsert_relation(rel, tenant_id=tid, acl=roles)
-        for he in hyperedges:
-            neo_store.upsert_hyperedge(he, tenant_id=tid, acl=roles)
+        # 4. Migrate Entities, Relations, HyperEdges, ACL-partitioned Communities via fast UNWIND batches
+        neo_store.upsert_entities_batch(entities, tenant_id=tid, acl=roles)
+        neo_store.upsert_relations_batch(relations, tenant_id=tid, acl=roles)
+        neo_store.upsert_hyperedges_batch(hyperedges, tenant_id=tid, acl=roles)
         if communities:
             neo_store.set_communities(communities, tenant_id=tid, acl_partition=roles[0])
 

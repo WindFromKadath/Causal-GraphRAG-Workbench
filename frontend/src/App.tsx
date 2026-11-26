@@ -37,6 +37,13 @@ export function App() {
     apiKey: "",
   });
   const [health, setHealth] = useState<ServiceHealth | null>(null);
+  const [tenants, setTenants] = useState<string[]>([
+    "fault_diag",
+    "fmea_oreda",
+    "failuresensoriq",
+    "grb_medical",
+    "grb_novel",
+  ]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
@@ -47,6 +54,12 @@ export function App() {
       .health(session)
       .then(setHealth)
       .catch(() => setHealth(null));
+    apiClient
+      .listTenants(session)
+      .then((res) => {
+        if (res.tenants.length > 0) setTenants(res.tenants);
+      })
+      .catch(() => undefined);
   }, [session]);
 
   return (
@@ -118,9 +131,11 @@ export function App() {
               onChange={(e) => setSession((s) => ({ ...s, tenantId: e.target.value }))}
               className="panel-subtle px-2.5 py-1 outline-none"
             >
-              <option value="fault_diag">Tenant: fault_diag</option>
-              <option value="fmea_oreda">Tenant: fmea_oreda</option>
-              <option value="default">Tenant: default</option>
+              {tenants.map((t) => (
+                <option key={t} value={t}>
+                  Tenant: {t}
+                </option>
+              ))}
             </select>
             <input
               value={session.aclRoles}

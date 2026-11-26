@@ -383,5 +383,15 @@ flowchart LR
 | 显性图谱思维链 | Jin et al., *Graph Chain-of-Thought (Graph-CoT)*; Chen et al., *Plan-on-Graph (PoG)* | ACL 2024 / AAAI 2025 | Stage 2.2 |
 | 思维树与图谱束搜索 | Yao et al., *Tree of Thoughts (ToT)*; Sun et al., *Think-on-Graph (ToG)* | NeurIPS 2023 / ICLR 2024 | Stage 2.3 |
 | 图文双向与路由评测 | *GraphRAG-Bench (When to use Graphs in RAG)*; [`OpenSPG/KAG`](https://github.com/OpenSPG/KAG); [`DataArcTech/ToG-2`](https://github.com/DataArcTech/ToG-2) | 2024–2025 (ICLR) | Stage 2.3 / 3.2 / 3.3 |
-| 图谱质检标准 | W3C, *Shapes Constraint Language (SHACL)* | W3C Standard | Stage 2.4 |
+| 图谱质检标准 | W3C, *Shapes Constraint Language (SHACL)* | W3C Standard | Stage 2.4 / 5.1 |
 | 超图与自演化记忆 | *HyperGraphRAG*; *A-MEM (Agentic Memory)*; *IndustryAssetEQA* | NeurIPS 2025 / ACL 2026 | Stage 3.3 / 3.4 |
+| 低成本轻图范式 | Microsoft Research, *LazyGraphRAG: Setting a new standard for quality and cost* | 2024.11 | Stage 4 / 5.2 |
+| 因果增强 RAG | Wang et al., *CausalRAG: Integrating Causal Graphs into Retrieval-Augmented Generation* ([`arXiv:2503.19878`](https://arxiv.org/abs/2503.19878)); *GraphRAG-Causal* | ACL 2025 | Stage 5 |
+| LLM 因果发现与边界 | Kıcıman et al., *Causal Reasoning and Large Language Models* ([`arXiv:2305.00050`](https://arxiv.org/abs/2305.00050)); Wan et al., *LLMs for Causal Discovery* ([`arXiv:2402.11068`](https://arxiv.org/abs/2402.11068)) | TMLR 2024 / IJCAI | Stage 5 |
+| 因果结构理论基石 | Judea Pearl, *Causality* / *The Book of Why*（三层因果阶梯 + Chain / Fork / Collider） | Classic | Stage 5 |
+
+---
+
+## 6. 第五阶段预告：因果知识图谱与因果增强 GraphRAG（Stage 5）
+
+> 完整建模规范与三步实施计划详见 [stage5_causal_graphrag_plan.md](stage5_causal_graphrag_plan.md)。Stage 5 将在 Stage 4 企业级底座之上，落地 **三层关系严格隔离（向量桥接 / 关联共现 / 有向因果）**、**5 种因果间结构（Chain / Fork / Collider-AND / Collider-OR / Intervention & Feedback）**、**Pearl 三级证据强度（`L3 干预实证 > L2 机理 > L1 观察`）**、**4 条 `Causal-SHACL` 硬门禁** 以及 **大规模纯文本因果漏斗抽取 + 向量阻塞实体消歧**。

@@ -130,6 +130,31 @@ def create_app(
         ]
         return InfraHealthResponse(all_healthy=all(i.ok for i in mapped), services=mapped)
 
+    @app.get("/api/v1/tenants", tags=["Health"])
+    async def list_tenants(
+        svc: AppServices = Depends(get_services),
+        _auth: AuthContext = Depends(get_auth_context),
+    ) -> dict[str, Any]:
+        """Discover all active tenants across PostgreSQL and Neo4j for multi-dataset switching."""
+        tenants: set[str] = {svc.config.env.default_tenant_id}
+        vs = svc.pipeline.vector_store
+        if isinstance(vs, PgVectorStore):
+            with vs._connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT tenant_id FROM child_chunks WHERE is_deleted = FALSE ORDER BY tenant_id"
+                )
+                tenants.update(str(r[0]) for r in cur.fetchall() if r and r[0])
+        gs = svc.pipeline.graph_store
+        if isinstance(gs, Neo4jGraphStore):
+            with gs._session() as sess:
+                rows = sess.run(
+                    "MATCH (e:Entity) WHERE coalesce(e.is_deleted, false) = false "
+                    "RETURN DISTINCT e.tenant_id AS tid ORDER BY tid"
+                ).data()
+                tenants.update(str(r["tid"]) for r in rows if r.get("tid"))
+        sorted_t = sorted(t for t in tenants if t)
+        return {"count": len(sorted_t), "tenants": sorted_t}
+
     # ------------------------------------------------------------------
     # 2. Documents, Quality Gates, Versioning & Redis Queue / DLQ
     # ------------------------------------------------------------------

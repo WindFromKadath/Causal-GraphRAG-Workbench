@@ -678,6 +678,166 @@ class Neo4jGraphStore:
                 "hyperedges_soft_deleted": int(he_rec["deleted_cnt"]) if he_rec else 0,
             }
 
+    def upsert_entities_batch(
+        self,
+        entities: list[Entity],
+        *,
+        tenant_id: str | None = None,
+        acl: list[str] | None = None,
+        batch_size: int = 250,
+    ) -> int:
+        """High-throughput Cypher `UNWIND` batch entity upsert for enterprise migrations."""
+        if not entities:
+            return 0
+        tid = tenant_id or self.default_tenant_id
+        cypher = """
+        UNWIND $rows AS row
+        MERGE (e:Entity {tenant_id: $tid, entity_id: row.eid})
+        ON CREATE SET
+            e.name = row.name,
+            e.entity_type = row.etype,
+            e.description = row.desc,
+            e.aliases = row.aliases,
+            e.source_chunk_ids = row.chunks,
+            e.community_id = row.comm_id,
+            e.acl = row.acl,
+            e.is_deleted = false,
+            e.metadata_json = row.meta_json
+        ON MATCH SET
+            e.entity_type = CASE WHEN e.entity_type = 'Concept' THEN row.etype ELSE e.entity_type END,
+            e.description = CASE WHEN size(coalesce(e.description, '')) = 0 THEN row.desc ELSE e.description END,
+            e.aliases = [x IN coalesce(e.aliases, []) WHERE NOT x IN row.aliases] + row.aliases,
+            e.source_chunk_ids = [x IN coalesce(e.source_chunk_ids, []) WHERE NOT x IN row.chunks] + row.chunks,
+            e.community_id = CASE WHEN row.comm_id >= 0 THEN row.comm_id ELSE coalesce(e.community_id, -1) END,
+            e.acl = [x IN coalesce(e.acl, []) WHERE NOT x IN row.acl] + row.acl,
+            e.is_deleted = false,
+            e.metadata_json = row.meta_json
+        """
+        rows = [
+            {
+                "eid": e.entity_id,
+                "name": e.name,
+                "etype": e.entity_type,
+                "desc": e.description[:600],
+                "aliases": e.aliases,
+                "chunks": e.source_chunk_ids,
+                "comm_id": e.community_id if e.community_id is not None else -1,
+                "acl": _parse_roles(acl if acl is not None else e.metadata.get("acl"), self.default_acl_roles),
+                "meta_json": json.dumps(e.metadata, ensure_ascii=False),
+            }
+            for e in entities
+        ]
+        with self._session() as sess:
+            for start in range(0, len(rows), batch_size):
+                sess.run(cypher, tid=tid, rows=rows[start : start + batch_size])
+        return len(rows)
+
+    def upsert_relations_batch(
+        self,
+        relations: list[Relation],
+        *,
+        tenant_id: str | None = None,
+        acl: list[str] | None = None,
+        batch_size: int = 500,
+    ) -> int:
+        """High-throughput Cypher `UNWIND` batch relation upsert (10,000+ edges in seconds)."""
+        if not relations:
+            return 0
+        tid = tenant_id or self.default_tenant_id
+        cypher = """
+        UNWIND $rows AS row
+        MATCH (s:Entity {tenant_id: $tid, entity_id: row.sid})
+        MATCH (t:Entity {tenant_id: $tid, entity_id: row.tid_ent})
+        MERGE (s)-[r:RELATES_TO {tenant_id: $tid, relation_id: row.rid}]->(t)
+        ON CREATE SET
+            r.relation_type = row.rtype,
+            r.description = row.desc,
+            r.weight = row.weight,
+            r.source_chunk_ids = row.chunks,
+            r.acl = row.acl,
+            r.is_deleted = false,
+            r.metadata_json = row.meta_json
+        ON MATCH SET
+            r.weight = coalesce(r.weight, 0.0) + row.weight,
+            r.source_chunk_ids = [x IN coalesce(r.source_chunk_ids, []) WHERE NOT x IN row.chunks] + row.chunks,
+            r.acl = [x IN coalesce(r.acl, []) WHERE NOT x IN row.acl] + row.acl,
+            r.is_deleted = false,
+            r.metadata_json = row.meta_json
+        """
+        rows = [
+            {
+                "sid": r.source_id,
+                "tid_ent": r.target_id,
+                "rid": r.relation_id,
+                "rtype": r.relation_type,
+                "desc": r.description[:600],
+                "weight": float(r.weight),
+                "chunks": r.source_chunk_ids,
+                "acl": _parse_roles(acl if acl is not None else r.metadata.get("acl"), self.default_acl_roles),
+                "meta_json": json.dumps(r.metadata, ensure_ascii=False),
+            }
+            for r in relations
+        ]
+        with self._session() as sess:
+            for start in range(0, len(rows), batch_size):
+                sess.run(cypher, tid=tid, rows=rows[start : start + batch_size])
+        return len(rows)
+
+    def upsert_hyperedges_batch(
+        self,
+        hyperedges: list[HyperEdge],
+        *,
+        tenant_id: str | None = None,
+        acl: list[str] | None = None,
+        batch_size: int = 100,
+    ) -> int:
+        """Batch upsert `:HyperEdge` mediator nodes and their `:CONDITION`/`:TARGET` links."""
+        if not hyperedges:
+            return 0
+        tid = tenant_id or self.default_tenant_id
+        cypher = """
+        UNWIND $rows AS row
+        MERGE (h:HyperEdge {tenant_id: $tid, hyperedge_id: row.hid})
+        SET h.relation_type = row.rtype,
+            h.description = row.desc,
+            h.confidence = row.conf,
+            h.weight = row.weight,
+            h.source_chunk_ids = row.chunks,
+            h.condition_entity_ids = row.conds,
+            h.target_entity_id = row.target_id,
+            h.acl = row.acl,
+            h.is_deleted = false,
+            h.metadata_json = row.meta_json
+        WITH h, row
+        OPTIONAL MATCH (t:Entity {tenant_id: $tid, entity_id: row.target_id})
+        FOREACH (_ IN CASE WHEN t IS NOT NULL THEN [1] ELSE [] END |
+            MERGE (h)-[:TARGET {tenant_id: $tid}]->(t)
+        )
+        WITH h, row
+        UNWIND row.conds AS cid
+        MATCH (c:Entity {tenant_id: $tid, entity_id: cid})
+        MERGE (c)-[:CONDITION {tenant_id: $tid}]->(h)
+        """
+        rows = [
+            {
+                "hid": h.hyperedge_id,
+                "rtype": h.relation_type,
+                "desc": h.description[:600],
+                "conf": float(h.confidence),
+                "weight": float(h.weight),
+                "chunks": h.source_chunk_ids,
+                "conds": h.condition_entity_ids,
+                "target_id": h.target_entity_id,
+                "acl": _parse_roles(acl if acl is not None else h.metadata.get("acl"), self.default_acl_roles),
+                "meta_json": json.dumps(h.metadata, ensure_ascii=False),
+            }
+            for h in hyperedges
+        ]
+        with self._session() as sess:
+            for start in range(0, len(rows), batch_size):
+                sess.run(cypher, tid=tid, rows=rows[start : start + batch_size])
+        return len(rows)
+
     def clear_tenant(self, tenant_id: str | None = None) -> None:
         tid = tenant_id or self.default_tenant_id
         with self._session() as sess:

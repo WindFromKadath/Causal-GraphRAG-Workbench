@@ -6,6 +6,26 @@
 
 ---
 
+## [2026-11-26] Stage 5 Causal Plan & Full Public Corpus Migration - 确立 Stage 5 因果图谱规划、Neo4j `UNWIND` 批量加速与全部 3 组公开资料直迁 PG16+Neo4j
+- **提交类型**：`feat`
+- **变更背景**：完成 Stage 4 之后的因果图谱认知定型与全量公开数据集迁移：正式将“三层关系隔离、5 种因果间结构（Chain/Fork/Collider-AND/Collider-OR/Intervention）、Pearl 三级证据强度（`L3/L2/L1`）与 4 条 `Causal-SHACL` 硬门禁”立项为 **Stage 5**；同时为 Neo4j 增加 `UNWIND` 批量写入与 `/api/v1/tenants` 自动租户发现接口，将全部 3 组公开资料（OREDA、IBM FailureSensorIQ、GraphRAG-Bench Medical/Novel）完整迁入 PG16 + Neo4j 5.26。
+- **主要修改**：
+  - 新增 `docs/stage5_causal_graphrag_plan.md`：系统确立 Stage 5.1 → 5.3 因果知识图谱与因果增强 GraphRAG 架构规划与学术索引；同步在 `docs/evolution_and_papers_guide.md` 补充 `CausalRAG (ACL 2025)`、`Kıcıman (TMLR 2024)`、`Wan (IJCAI Survey)`、`LazyGraphRAG`、`Pearl SCM` 等参考文献并更新 `README.md`。
+  - 升级 `src/llm_graphrag_kg/providers/storage/neo4j_store.py` 与 `pipelines/migrate_enterprise.py`：新增 `upsert_entities_batch`、`upsert_relations_batch`、`upsert_hyperedges_batch`（Cypher `UNWIND` 批量写入），将万级关系迁入耗时压至数秒。
+  - 升级 `src/llm_graphrag_kg/api/app.py`（新增 `GET /api/v1/tenants` 动态发现 PG+Neo4j 活跃租户）及 `frontend/src/api/client.ts`、`frontend/src/App.tsx`（顶栏租户切换自动同步全部 5 组已迁入数据集）。
+- **验证方式**：
+  - 前端 `tsc --noEmit` + `vite build` 零报错（6.40s）；后端 `ruff check` 0 告警、`pytest -q` **63/63 通过**。
+  - 真机 Docker 全量迁移验收（`qwen3-embedding:0.6b` 1024d `halfvec` + Neo4j 5.26）：
+    - `fault_diag`（示例）：`15` 切片 / `51` 实体 / `94` 关系 / `7` 超边 / `9` 社区；
+    - `fmea_oreda`（公开 ①）：`87` 切片 / `87` 实体 / `1,013` 关系 / `5` 社区（**`SHACL-lite 100.0% PASS`**）；
+    - `failuresensoriq`（公开 ②）：`111` 切片 / `233` 实体 / `692` 关系 / **`64` 超边** / `7` 社区（`21.85s`，**`SHACL-lite 100.0% PASS (iso_failuresensoriq)`**）；
+    - `grb_medical`（公开 ③a）：`1,528` 切片 / `450` 实体 / `6,758` 关系 / `9` 社区；
+    - `grb_novel`（公开 ③b）：`702` 切片 / `450` 实体 / `2,714` 关系 / `16` 社区；
+    - 全库总计 **`2,443` 条 `halfvec(1024)` 切片、`1,271` 实体、`11,271` 关系、`71` 超边、`46` 社区**（5 租户隔离）。
+- **隐私与迁移自检**：公开语料迁移数据均持久化在 Docker 命名卷中，无私有数据、密钥或构建产物入库。
+
+---
+
 ## [2026-11-26] Stage 4.5 Modern React 19 + TypeScript Enterprise Web Console - 5 大专业工作区与前后端全栈收官
 - **提交类型**：`feat`
 - **变更背景**：完成 `docs/stage4_enterprise_refactor_plan.md` 最终收官子阶段 **Stage 4.5**，构建独立现代企业级 Web 前端控制台（React 19 + TypeScript + Vite 6 + Tailwind CSS v4 + Cytoscape.js + ECharts），与 Stage 4.1–4.4 企业级后端（PG16/pgvector + Neo4j 5.26 + Redis 7 + Doc Governance + Thin LangGraph + FastAPI REST/SSE）打通全栈闭环。

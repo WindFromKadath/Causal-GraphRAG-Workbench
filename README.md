@@ -40,7 +40,8 @@ LLM-GraphRAG-KG/
 │   ├── benchmark_stage2_hard_datasets.md       # 第二阶段收尾：GraphRAG-Bench 双域高难评测与边界总结
 │   ├── benchmark_stage3_base_model.md          # Stage 3.0 基础模型基准：本地 Ollama 多上下文吞吐与显存选型
 │   ├── stage3_nextgen_graphrag_plan.md         # 第三阶段规划（已完成）：稠密混合检索、路由、Judge、超边与A-MEM
-│   └── stage4_enterprise_refactor_plan.md      # ★ 第四阶段规划（已完成）：PG+pgvector、Neo4j、LangGraph、FastAPI与React重构
+│   ├── stage4_enterprise_refactor_plan.md      # ★ 第四阶段规划（已完成）：PG+pgvector、Neo4j、LangGraph、FastAPI与React重构
+│   └── stage5_causal_graphrag_plan.md          # ★ 第五阶段规划（待推进）：因果图谱抽分、5种因果间结构与Causal-SHACL门禁
 ├── deploy/postgres/init.sql     # PostgreSQL 16 + pgvector 0.8 初始化 DDL
 ├── docker-compose.yml           # PG16 (25432) + Neo4j 5.26 (27474/27687) + Redis 7 (26379)
 ├── frontend/                    # ★ Stage 4.5 React 19 + TS + Vite + Tailwind v4 + Cytoscape.js + ECharts 控制台
