@@ -11,7 +11,8 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from llm_graphrag_kg.api.deps import AppServices, get_auth_context, get_services, require_admin
 from llm_graphrag_kg.api.schemas import (
@@ -641,5 +642,16 @@ def create_app(
             "summary": summary.model_dump(),
             "questions": [s.model_dump() for s in scores],
         }
+
+    # Optional Stage 4.5 built React SPA mounting (serves production console at `/` when `frontend/dist` exists)
+    dist_dir = cfg.project_root / "frontend" / "dist"
+    assets_dir = dist_dir / "assets"
+    if dist_dir.is_dir() and (dist_dir / "index.html").is_file():
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="frontend-assets")
+
+        @app.get("/", include_in_schema=False)
+        async def serve_spa_root() -> FileResponse:
+            return FileResponse(dist_dir / "index.html")
 
     return app

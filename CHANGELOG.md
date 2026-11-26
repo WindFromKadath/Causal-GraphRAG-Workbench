@@ -6,6 +6,26 @@
 
 ---
 
+## [2026-11-26] Stage 4.5 Modern React 19 + TypeScript Enterprise Web Console - 5 大专业工作区与前后端全栈收官
+- **提交类型**：`feat`
+- **变更背景**：完成 `docs/stage4_enterprise_refactor_plan.md` 最终收官子阶段 **Stage 4.5**，构建独立现代企业级 Web 前端控制台（React 19 + TypeScript + Vite 6 + Tailwind CSS v4 + Cytoscape.js + ECharts），与 Stage 4.1–4.4 企业级后端（PG16/pgvector + Neo4j 5.26 + Redis 7 + Doc Governance + Thin LangGraph + FastAPI REST/SSE）打通全栈闭环。
+- **主要修改**：
+  - 新增独立前端工程 `frontend/`（`package.json`、`tsconfig.json`、`vite.config.ts`、`index.html`、`src/index.css`、`src/types/api.ts`、`src/api/client.ts`、`src/App.tsx`、`src/main.tsx`）与 5 大企业工作区组件：
+    - `ChatReasoningWorkspace.tsx`：实时 SSE 10 节点执行步进条、HITL 人工审批暂停/批准/驳回交互条、ToT 假设分支对比、CoT 引用审计、超边/A-MEM 命中与精排 Top-K 证据卡片；
+    - `DocumentsWorkspace.tsx`：拖拽多格式上传（三道质检拦截展示）、SHA-256 增量版本测试、文档版本一键回滚/双库同步软删、Redis DLQ 与 Reconciliation 对账控制；
+    - `GraphExplorerWorkspace.tsx`：Cytoscape.js 交互式 Neo4j 图谱与菱形 `:HyperEdge` 超边浏览器、多布局切换、点击节点查看溯源切片与多 Profile `SHACL-lite` 实时体检；
+    - `EvalLabWorkspace.tsx`：ECharts 4D/IR 指标柱图与三态可答性（`FULL/PARTIAL/NONE/EXECUTION_ERROR`）环图及可编辑 JSON 实时评测器；
+    - `ObservabilityWorkspace.tsx`：三服务健康卡片、PG `request_traces` 列表、ECharts 节点瀑布耗时图（Waterfall）与 A-MEM 情景记忆账本。
+  - 升级 `src/llm_graphrag_kg/api/app.py` 支持自动挂载 `frontend/dist` SPA 静态产物（单命令 `llm-graphrag-kg serve` 即可同时提供 Web 控制台与 OpenAPI 服务），并更新 `.gitignore` 屏蔽 `frontend/node_modules/` 与 `frontend/dist/`。
+  - 同步更新 `README.md`、`docs/stage4_enterprise_refactor_plan.md` 与 `docs/evolution_and_papers_guide.md`。
+- **验证方式**：
+  - 前端构建：`npm --prefix frontend run typecheck`（`tsc --noEmit`）0 报错，`npm --prefix frontend run build`（`vite build`）6.89s 构建 `2,152` 模块成功。
+  - 后端与安全：`ruff check src tests scripts` 0 告警，`pytest -q` **63/63 全部通过**，`scripts/privacy_check.py` 扫描通过（121 文件）。
+  - 真机全栈联调：验证 `GET /` 与 `/assets/*` 托管构建产物（`200 OK`），完整跑通 Multipart 上传 → 三道质检入库 → Neo4j 图谱查询 → `POST /api/v1/agent/stream` SSE 节点推送与 `hitl_interrupt` 暂停 → `POST /api/v1/agent/hitl/{thread_id}/resume` 恢复达 **`100.0%` Grounding** → 同步软删清理全闭环。
+- **隐私与迁移自检**：`frontend/node_modules/`、`frontend/dist/` 与 `frontend/.vite/` 均已加入 `.gitignore`，无构建产物、密钥或本机绝对路径入库。
+
+---
+
 ## [2026-11-26] Stage 4.4 FastAPI Production Service Layer - 20 个 Async REST/SSE OpenAPI 端点与多租户/RBAC 鉴权网关
 - **提交类型**：`feat`
 - **变更背景**：完成 `docs/stage4_enterprise_refactor_plan.md` 规划的 **Stage 4.4**，将双存储底座、文档治理与 Redis 增量队列、Neo4j 图谱/超边/SHACL、薄 LangGraph 有环推理/HITL 与可观测评测统一封装为生产级 FastAPI 服务层（支持节点级 SSE 实时推送与严格多租户/RBAC 鉴权），为 Stage 4.5 React + TypeScript 现代前端做好完整后端契约准备。

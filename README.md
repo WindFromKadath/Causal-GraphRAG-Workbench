@@ -40,7 +40,10 @@ LLM-GraphRAG-KG/
 │   ├── benchmark_stage2_hard_datasets.md       # 第二阶段收尾：GraphRAG-Bench 双域高难评测与边界总结
 │   ├── benchmark_stage3_base_model.md          # Stage 3.0 基础模型基准：本地 Ollama 多上下文吞吐与显存选型
 │   ├── stage3_nextgen_graphrag_plan.md         # 第三阶段规划（已完成）：稠密混合检索、路由、Judge、超边与A-MEM
-│   └── stage4_enterprise_refactor_plan.md      # ★ 第四阶段规划（待推进）：PG+pgvector、Neo4j、LangGraph、FastAPI与React重构
+│   └── stage4_enterprise_refactor_plan.md      # ★ 第四阶段规划（已完成）：PG+pgvector、Neo4j、LangGraph、FastAPI与React重构
+├── deploy/postgres/init.sql     # PostgreSQL 16 + pgvector 0.8 初始化 DDL
+├── docker-compose.yml           # PG16 (25432) + Neo4j 5.26 (27474/27687) + Redis 7 (26379)
+├── frontend/                    # ★ Stage 4.5 React 19 + TS + Vite + Tailwind v4 + Cytoscape.js + ECharts 控制台
 ├── scripts/                     # 隐私与提交规范检查工具
 ├── src/llm_graphrag_kg/         # 核心框架源码
 └── tests/                       # 自动化测试套件
@@ -92,6 +95,16 @@ uv run llm-graphrag-kg judge-grb --questions data/private/graphrag_bench/Dataset
 uv run llm-graphrag-kg mine-hyperedges --config-file configs/fault_diagnosis.yaml
 uv run llm-graphrag-kg query "离心泵机组同时出现2倍频振动升高、轴承温升异常和电机定子电流波动，根因是什么？" --config-file configs/fault_diagnosis.yaml --mode ppr --reasoning tot_dfs --writeback
 uv run llm-graphrag-kg memory-list --config-file configs/fault_diagnosis.yaml
+
+# 12. Stage 4.1–4.5 企业级生产栈一键启动（Docker PG16+pgvector + Neo4j 5.26 + Redis 7 + FastAPI + React 19 控制台）
+uv sync --extra enterprise --extra dev
+docker compose up -d
+uv run llm-graphrag-kg check-infra
+uv run llm-graphrag-kg migrate-enterprise --config-file configs/fault_diagnosis.yaml --tenant fault_diag --acl "public,engineer" --clear-target
+npm --prefix frontend install && npm --prefix frontend run build
+uv run llm-graphrag-kg serve --host 127.0.0.1 --port 8000 --vector-backend pgvector --graph-backend neo4j --checkpointer postgres
+# 浏览器打开 http://127.0.0.1:8000 （生产控制台）或 http://127.0.0.1:8000/docs （OpenAPI）
+# 前端热更新开发模式另开终端执行：npm --prefix frontend run dev （http://127.0.0.1:5173）
 ```
 
 ## 隐私与提交流程

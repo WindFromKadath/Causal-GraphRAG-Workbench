@@ -45,3 +45,9 @@ configs/*.local.yml
 
 # Local-only experiments & hardware benchmarks (NEVER commit)
 local_bench/
+
+
+# Stage 4.5 React + Vite Frontend artifacts (NEVER commit)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/

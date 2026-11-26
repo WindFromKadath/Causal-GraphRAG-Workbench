@@ -305,7 +305,7 @@ flowchart LR
 | `LocalVectorStore` (`.npy` + Okapi BM25) | `BaseVectorStore` + `TextChunk` | **PostgreSQL 16 + `pgvector 0.8.7`（✅ Stage 4.1 已落地）**（Docker 端口 `25432`） | `halfvec(1024)` HNSW（省 50% 内存，`EXPLAIN` `0.163ms` 命中）+ `hnsw.iterative_scan` + `tsvector`/CJK RRF + `index_registry` 模型指纹强校验 + 业务/ACL/A-MEM 同库 ACID |
 | `nomic-embed-text` + 固定滑窗切分 | `BaseEmbeddingClient` + `DocumentIngestor` | **`qwen3-embedding:0.6b`（✅ Stage 4.1 CPU 主跑）** + **多格式解析（Docling / PyMuPDF / python-docx）+ Parent-Child + 面包屑前缀 + 三道质检（✅ Stage 4.2 已落地）** | Fix A/B 0 显存占用；表格 `<=600 tok` 原子保留、`>600 tok` 续拼表头；Python AST 切分；SHA-256 哈希去重跳过未变块 |
 | 手动线性/分支编排 + 全量 `build` | `GraphRAGPipeline` + `VerifiedMemoryStore` | **Redis Streams / DLQ 异步增量 Worker（✅ Stage 4.2）** + **薄 `LangGraph`（`PostgresSaver` + Corrective RAG + Grounding 自愈 + HITL `interrupt()`）+ 纯 CPU ONNX/词面精排 + PG/OTel Trace + 评测 v2（✅ Stage 4.3 已落地）** | 幂等去重、乱序拦截、双库软删；0 显存 CPU 精排 + Redis 缓存；有环自愈与人工审批持久化；执行失败与质量分母分离 |
-| `cli.py` + 草台 Streamlit | `QueryResult` + `tot_tree_exporter.py` | **FastAPI（Async REST + SSE 流式推送 + Tenant/ACL 鉴权，✅ Stage 4.4 已落地）+ React 19 / TypeScript / Vite / Tailwind / Cytoscape.js / ECharts（Stage 4.5）** | 20 个生产 OpenAPI 端点与节点级 SSE；Stage 4.5 交付 5 大企业控制台工作区 |
+| `cli.py` + 草台 Streamlit | `QueryResult` + `tot_tree_exporter.py` | **FastAPI（Async REST + SSE 流式推送 + Tenant/ACL 鉴权，✅ Stage 4.4）+ React 19 / TypeScript / Vite / Tailwind v4 / Cytoscape.js / ECharts（✅ Stage 4.5 全栈收官）** | 20 个生产 OpenAPI 端点 + 5 大企业控制台工作区（支持深/浅主题、租户/ACL 切换与 FastAPI 单端口托管） |
 
 ### Stage 4.1 — 企业级双存储底座（PostgreSQL 16 + pgvector 0.8 + Neo4j 5.26 + Redis 7）
 - **升级动机（Why）**：
@@ -356,6 +356,18 @@ flowchart LR
 - **真机实测证据（Evidence）**：
   - `ruff` 0 告警，`pytest` **63/63 通过且 0 警告**（`httpx.AsyncClient` 全覆盖 `401/403` 鉴权、伪造 PDF `422`、文档/图谱/Ego-Graph/超边/SHACL、HITL 暂停与恢复、真实 `text/event-stream` SSE 与 Eval v2）。
   - **真机 Docker FastAPI 联调**：`GET /api/v1/infra/health` 三服务全绿；`GET /api/v1/graph/overview` 返回 `fault_diag` 51 实体/94 关系/7 超边；`GET /api/v1/graph/shacl?profile=fmea_kg_rdf` 达 **`100.0% PASS`**；`POST /api/v1/agent/stream` 实时流式推送完整 7 节点更新与最终 `100.0%` Grounding 回答，并可在 `GET /api/v1/traces` 即时反查。
+
+### Stage 4.5 — React 19 + TypeScript 现代企业 Web 控制台（Stage 4 全面收官）
+- **升级动机（Why）**：
+  - 原型阶段的 Streamlit 工作台难以承载 SSE 流式节点进度条、Cytoscape.js 大规模图谱/超边交互、ECharts 瀑布耗时分析、以及多租户/RBAC 请求头切换与 HITL 审批流。
+- **核心工程设计与落点（Code Map）**：
+  - 独立前端工程 `frontend/`（React 19 + TypeScript + Vite 6 + Tailwind CSS v4 + Cytoscape.js + ECharts + Lucide）：
+    - `src/types/api.ts` & `src/api/client.ts`：强类型 REST 客户端 + 原生 `ReadableStream` SSE 解析器，全局注入 `X-Tenant-Id`、`X-ACL-Roles`、`X-Operator` 与可选 `X-API-Key`；
+    - 5 大工作区组件：`ChatReasoningWorkspace.tsx`（SSE 10 节点流水线 + HITL 暂停/批准/驳回 + ToT/CoT/超边/A-MEM）、`DocumentsWorkspace.tsx`（拖拽上传三道质检 + 增量入库 + 一键回滚/软删 + DLQ/对账）、`GraphExplorerWorkspace.tsx`（Cytoscape.js 实体/菱形超边画布 + 节点溯源 + 多 Profile SHACL 体检）、`EvalLabWorkspace.tsx`（ECharts 4D 指标柱图 + 三态可答性环图 + 实时 JSON 评测）与 `ObservabilityWorkspace.tsx`（三服务健康卡片 + ECharts 节点瀑布耗时 + A-MEM 审计账本）；
+    - `src/llm_graphrag_kg/api/app.py` 自动挂载 `frontend/dist`，支持 `llm-graphrag-kg serve` 单命令同时提供 Web 控制台与 API，同时保留 `llm-graphrag-kg ui`（Streamlit）作为离线轻模式。
+- **真机实测证据（Evidence）**：
+  - `npm --prefix frontend run typecheck`（`tsc --noEmit`）0 错误，`vite build` 6.89s 构建 `2,152` 模块通过；全仓 Python `ruff` 0 告警、`pytest` **63/63** 通过、`privacy_check` 121 文件通过；
+  - 真机全栈联调验证：`GET /` + `/assets/*` 返回编译产物（`200 OK`），完整打通“Multipart 上传 → 质检入库 → Neo4j 图谱查询 → SSE 实时流式问答与 HITL 审批暂停 → `resume` 恢复达 `100.0%` Grounding → 同步软删清理”全闭环。
 
 ---
 
