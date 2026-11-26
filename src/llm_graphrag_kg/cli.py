@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -24,7 +25,10 @@ from llm_graphrag_kg.adapters.graphrag_bench import (
     evaluate_graphrag_bench,
     ingest_graphrag_bench_corpus,
 )
+from llm_graphrag_kg.adapters.rdf_fmea import ingest_fmea_rdf_ttl
 from llm_graphrag_kg.config import load_config
+from llm_graphrag_kg.eval.llm_judge import judge_grb_checkpoints
+from llm_graphrag_kg.pipelines.hypergraph import mine_joint_hyperedges
 from llm_graphrag_kg.pipelines.workflow import GraphRAGPipeline
 from llm_graphrag_kg.providers.factory import create_embedding_client, create_llm_client
 from llm_graphrag_kg.viz.audit_report import export_audit_artifacts
@@ -305,6 +309,13 @@ def query(
             help="Control Ollama implicit thinking (defaults to False under --reasoning cot).",
         ),
     ] = None,
+    writeback: Annotated[
+        bool,
+        typer.Option(
+            "--writeback/--no-writeback",
+            help="Enable Stage 3.4 gated A-MEM verified memory write-back after grounding check.",
+        ),
+    ] = False,
     config_file: Annotated[Path | None, typer.Option(help="Optional YAML config path.")] = None,
 ) -> None:
     """Execute a GraphRAG query and inspect answer, subgraph trace, CoT grounding, and evidences."""
@@ -313,6 +324,21 @@ def query(
         llm_provider_override=provider,
         embedding_provider_override=embedder,
     )
+    # Auto-align embedding provider/model from persisted manifest.json when caller didn't override
+    if embedder is None:
+        target_store = storage_dir or cfg.storage_path
+        manifest_path = target_store / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                m_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                m_prov = str(m_data.get("embedding_provider", "")).strip()
+                m_model = str(m_data.get("embedding_model", "")).strip()
+                if m_prov:
+                    cfg.env.embedding_provider = m_prov
+                if m_model:
+                    cfg.env.embedding_model = m_model
+            except (OSError, ValueError):
+                pass
     if fast_model is not None:
         cfg.env.llm_fast_model = fast_model or None
     eff_reasoning = (reasoning or cfg.reasoning.default_paradigm).strip().lower()
@@ -331,6 +357,7 @@ def query(
         storage_dir=storage_dir,
         enable_compact=compact,
         reasoning=reasoning,
+        enable_writeback=writeback,
     )
 
     paradigm_tag = result.metadata.get("reasoning_paradigm", "direct")
@@ -385,6 +412,25 @@ def query(
                 f"passed={audit_data.get('passed')}, "
                 f"ungrounded={len(audit_data.get('ungrounded_citations', []))})",
             )
+    matched_he = result.metadata.get("matched_hyperedges")
+    if isinstance(matched_he, list) and matched_he:
+        he_desc = "; ".join(
+            f"{'+'.join(m.get('matched_condition_names', []))} => {m.get('target_entity_name')} "
+            f"({float(m.get('coverage_ratio', 0.0)) * 100:.0f}%)"
+            for m in matched_he[:3]
+        )
+        trace_table.add_row("HyperGraph Matches", f"{len(matched_he)} hit(s): {he_desc}")
+    recalled_mem = result.metadata.get("recalled_memories")
+    if isinstance(recalled_mem, list) and recalled_mem:
+        trace_table.add_row(
+            "Recalled A-MEM",
+            f"{len(recalled_mem)} verified memor(ies): "
+            + ", ".join(str(m.get("memory_id", "")) for m in recalled_mem[:3]),
+        )
+    wb_dec = result.metadata.get("writeback_decision")
+    if isinstance(wb_dec, dict):
+        st_lbl = "ACCEPTED" if wb_dec.get("accepted") else f"REJECTED ({wb_dec.get('gate_failed')})"
+        trace_table.add_row("A-MEM Write-Back", f"{st_lbl} | {wb_dec.get('reason', '')}")
     console.print(trace_table)
 
     if isinstance(reasoning_data, dict) and reasoning_data.get("branches"):
@@ -815,8 +861,22 @@ def ingest_grb(
             help="Use fast deterministic domain-phrase KG indexing or full LLM extraction.",
         ),
     ] = True,
+    openie: Annotated[
+        bool,
+        typer.Option(
+            "--openie/--no-openie",
+            help="Run checkpointed directional Semantic OpenIE extraction (Stage 3.3).",
+        ),
+    ] = False,
+    openie_max_chunks: Annotated[
+        int,
+        typer.Option(
+            "--openie-max-chunks",
+            help="Optional cap on chunks processed by Semantic OpenIE (0 = all chunks).",
+        ),
+    ] = 0,
     provider: Annotated[
-        str | None, typer.Option(help="Override LLM provider when --llm-extract is set.")
+        str | None, typer.Option(help="Override LLM provider when --llm-extract or --openie is set.")
     ] = None,
     embedder: Annotated[
         str | None,
@@ -841,6 +901,8 @@ def ingest_grb(
         max_chars=max_chars,
         source_filter=source_filter,
         fast_lexical=fast_lexical,
+        use_openie=openie,
+        openie_max_chunks=openie_max_chunks,
     )
     console.print(
         Panel(
@@ -968,3 +1030,242 @@ def eval_grb(
         )
     console.print(table)
     console.print(f"[cyan]Report written to:[/cyan] {report_path}")
+
+
+@app.command("ingest-rdf")
+def ingest_rdf(
+    ttl: Annotated[
+        Path,
+        typer.Option(
+            "--ttl",
+            help="Path to industrial RDF/Turtle (.ttl) file (e.g., FMEA_KG.ttl).",
+        ),
+    ] = Path("data/private/assetopsbench_eqa/IndustryAssetEQA/data/fmea_kg/FMEA_KG.ttl"),
+    config_file: Annotated[
+        Path, typer.Option("--config-file", help="YAML config path.")
+    ] = Path("configs/fmea_kg_rdf.yaml"),
+    storage_dir: Annotated[
+        Path | None, typer.Option("--storage", help="Optional override storage dir.")
+    ] = None,
+    embedder: Annotated[
+        str | None,
+        typer.Option(help="Override embedding provider: ollama_native | openai_compat | local_hash"),
+    ] = None,
+    embedding_model: Annotated[
+        str | None, typer.Option("--embedding-model", help="Optional dense embedding model override.")
+    ] = None,
+    run_shacl: Annotated[
+        bool, typer.Option("--run-shacl/--no-shacl", help="Run SHACL-lite audit immediately after import.")
+    ] = True,
+) -> None:
+    """Import industrial OREDA/FMEA RDF Turtle (.ttl) KG and run SHACL-lite validation (Stage 3.3)."""
+    cfg = load_config(
+        config_path=config_file,
+        llm_provider_override="mock",
+        embedding_provider_override=embedder,
+    )
+    if embedding_model:
+        cfg.env.embedding_model = embedding_model
+
+    report = ingest_fmea_rdf_ttl(ttl, cfg, storage_dir=storage_dir)
+    stats = report.audit_stats
+    top_preds = ", ".join(f"{k}:{v}" for k, v in list(report.predicate_counts.items())[:6])
+    console.print(
+        Panel(
+            f"Source: {report.source_file} | Raw Triples: {report.raw_triples} | "
+            f"Raw RDF Nodes: {report.raw_rdf_nodes}\n"
+            f"Canonical Entities: {stats.entity_count} (merged_dups={report.merged_duplicate_labels}, "
+            f"skipped_isolated={report.skipped_isolated})\n"
+            f"Canonical Relations: {stats.relation_count} (skipped_self_loops={report.skipped_self_loops}, "
+            f"skipped_dangling={report.skipped_dangling}) | Communities: {stats.community_count}\n"
+            f"Top Predicates: {top_preds}\n"
+            f"Storage: {storage_dir or cfg.storage_path}",
+            title="Industrial RDF/Turtle KG Imported (Stage 3.3)",
+            border_style="green",
+        )
+    )
+
+    if run_shacl:
+        pipeline = GraphRAGPipeline(cfg)
+        pipeline.load(storage_dir or cfg.storage_path)
+        shacl = validate_kg_shacl_lite(pipeline.graph_store, pipeline.vector_store, cfg)
+        console.print(
+            f"[bold cyan]SHACL-lite Audit:[/bold cyan] {shacl.overall_status} "
+            f"({shacl.compliance_score * 100:.1f}%, errors={shacl.error_count}, warnings={shacl.warning_count})"
+        )
+        out_md = cfg.output_path / "shacl_validation_report.md"
+        out_md.parent.mkdir(parents=True, exist_ok=True)
+        out_md.write_text(shacl.to_markdown(), encoding="utf-8")
+        if shacl.overall_status == "FAIL":
+            raise typer.Exit(code=1)
+
+
+@app.command("judge-grb")
+def judge_grb(
+    questions: Annotated[
+        Path,
+        typer.Option("--questions", help="Path to GraphRAG-Bench Questions JSON."),
+    ] = Path("data/private/graphrag_bench/Datasets/Questions/medical_questions.json"),
+    checkpoint: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--checkpoint",
+            help="Repeatable `mode_label=path/to/grb_*.checkpoint.jsonl` entries to score.",
+        ),
+    ] = None,
+    config_file: Annotated[
+        Path, typer.Option("--config-file", help="YAML config path.")
+    ] = Path("configs/graphrag_bench_medical.yaml"),
+    tag: Annotated[str, typer.Option("--tag", help="Output subdirectory tag.")] = "stage33_judge",
+    limit: Annotated[int, typer.Option(help="Max questions per checkpoint (0 = all).")] = 0,
+    resume: Annotated[
+        bool, typer.Option("--resume/--no-resume", help="Resume from judge JSONL checkpoints.")
+    ] = True,
+    provider: Annotated[
+        str | None, typer.Option(help="Override LLM provider: ollama_native | openai_compat | mock")
+    ] = None,
+    embedder: Annotated[
+        str | None,
+        typer.Option(help="Override embedding provider: ollama_native | openai_compat | local_hash"),
+    ] = None,
+    embedding_model: Annotated[
+        str | None, typer.Option("--embedding-model", help="Optional dense embedding model override.")
+    ] = None,
+    think: Annotated[
+        bool | None, typer.Option("--think/--no-think", help="Control Ollama thinking mode.")
+    ] = False,
+    num_ctx: Annotated[
+        int | None, typer.Option("--num-ctx", help="Override Ollama context length.")
+    ] = 16384,
+) -> None:
+    """Run official-aligned 4D LLM-as-a-Judge across GraphRAG-Bench checkpoints (Stage 3.3)."""
+    if not checkpoint:
+        console.print("[red]Provide at least one --checkpoint mode=path.jsonl entry.[/red]")
+        raise typer.Exit(code=2)
+
+    ckpt_map: dict[str, Path] = {}
+    for entry in checkpoint:
+        if "=" not in entry:
+            console.print(f"[red]Invalid --checkpoint format (expected label=path): {entry}[/red]")
+            raise typer.Exit(code=2)
+        label, path_str = entry.split("=", 1)
+        ckpt_map[label.strip()] = Path(path_str.strip())
+
+    cfg = load_config(
+        config_path=config_file,
+        llm_provider_override=provider,
+        embedding_provider_override=embedder,
+    )
+    if embedding_model:
+        cfg.env.embedding_model = embedding_model
+    if think is not None:
+        cfg.env.llm_think = think
+    if num_ctx is not None:
+        cfg.env.llm_num_ctx = num_ctx
+
+    report, report_path = judge_grb_checkpoints(
+        questions_path=questions,
+        checkpoint_map=ckpt_map,
+        config=cfg,
+        output_dir=cfg.output_path,
+        tag=tag,
+        limit=limit,
+        resume=resume,
+    )
+    table = Table(title=f"4D LLM-as-a-Judge ({report.tag} | {report.total_questions} Qs | {report.judge_model})")
+    table.add_column("Mode", style="cyan")
+    table.add_column("Accuracy", style="green")
+    table.add_column("Faithfulness", style="yellow")
+    table.add_column("Sem. Coverage", style="blue")
+    table.add_column("Ret EvRec", style="blue")
+    table.add_column("Refusal Rate", style="magenta")
+    table.add_column("Legacy F1", style="white")
+    for s in report.modes:
+        table.add_row(
+            s.mode,
+            f"{s.avg_answer_accuracy * 100:.1f}%",
+            f"{s.avg_faithfulness * 100:.1f}%",
+            f"{s.avg_semantic_coverage * 100:.1f}%",
+            f"{s.avg_retrieval_evidence_recall * 100:.1f}%",
+            f"{s.refusal_rate * 100:.1f}%",
+            f"{s.avg_token_f1_legacy * 100:.1f}%",
+        )
+    console.print(table)
+    console.print(f"[cyan]Judge report written to:[/cyan] {report_path}")
+
+
+@app.command("mine-hyperedges")
+def mine_hyperedges_cmd(
+    config_file: Annotated[
+        Path, typer.Option("--config-file", help="YAML config path.")
+    ] = Path("configs/fault_diagnosis.yaml"),
+    storage_dir: Annotated[
+        Path | None, typer.Option("--storage", help="Optional override storage dir.")
+    ] = None,
+    min_conditions: Annotated[
+        int, typer.Option("--min-conditions", help="Minimum joint condition entities per hyperedge.")
+    ] = 2,
+) -> None:
+    """Mine multi-condition N-ary HyperEdges on an existing KG and persist into graph.json (Stage 3.4)."""
+    cfg = load_config(config_path=config_file, llm_provider_override="mock")
+    target_store = storage_dir or cfg.storage_path
+    pipeline = GraphRAGPipeline(cfg)
+    pipeline.load(target_store)
+    mined = mine_joint_hyperedges(pipeline.graph_store, min_conditions=min_conditions)
+    pipeline.graph_store.save(target_store)
+    ent_map = {e.entity_id: e.name for e in pipeline.graph_store.get_all_entities()}
+    table = Table(title=f"HyperGraph Multi-Condition HyperEdges ({len(mined)} mined)")
+    table.add_column("ID", style="cyan")
+    table.add_column("Joint Conditions", style="yellow")
+    table.add_column("Relation", style="magenta")
+    table.add_column("Target", style="green")
+    table.add_column("Conf", style="white")
+    table.add_column("Chunks", style="dim")
+    for h in mined[:20]:
+        conds = " + ".join(ent_map.get(c, c) for c in h.condition_entity_ids)
+        tgt = ent_map.get(h.target_entity_id, h.target_entity_id)
+        table.add_row(
+            h.hyperedge_id,
+            conds,
+            h.relation_type,
+            tgt,
+            f"{h.confidence:.2f}",
+            ", ".join(h.source_chunk_ids[:2]),
+        )
+    console.print(table)
+    console.print(f"[green]Persisted {len(mined)} hyperedges to:[/green] {target_store / 'graph.json'}")
+
+
+@app.command("memory-list")
+def memory_list_cmd(
+    config_file: Annotated[
+        Path, typer.Option("--config-file", help="YAML config path.")
+    ] = Path("configs/fault_diagnosis.yaml"),
+    storage_dir: Annotated[
+        Path | None, typer.Option("--storage", help="Optional override storage dir.")
+    ] = None,
+) -> None:
+    """List verified episodic memories written back via the Stage 3.4 anti-poisoning gate."""
+    cfg = load_config(config_path=config_file, llm_provider_override="mock")
+    target_store = storage_dir or cfg.storage_path
+    pipeline = GraphRAGPipeline(cfg)
+    pipeline.load(target_store)
+    records = pipeline.memory_store.get_all()
+    if not records:
+        console.print(f"[yellow]No verified memories recorded yet in {target_store}.[/yellow]")
+        return
+    table = Table(title=f"Verified Episodic Memories ({len(records)})")
+    table.add_column("ID", style="cyan")
+    table.add_column("Valid From", style="dim")
+    table.add_column("Paradigm", style="magenta")
+    table.add_column("Grounding / Conf", style="green")
+    table.add_column("Question & Conclusion", style="white")
+    for rec in records:
+        table.add_row(
+            rec.memory_id,
+            rec.valid_from,
+            rec.reasoning_paradigm,
+            f"{rec.grounding_score * 100:.0f}% / {rec.confidence:.2f}",
+            f"Q: {rec.question[:80]}\nA: {rec.conclusion[:140]}",
+        )
+    console.print(table)

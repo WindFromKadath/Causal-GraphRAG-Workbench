@@ -120,6 +120,12 @@ class MockLLMClient:
         max_tokens: int | None = None,
     ) -> str:
         _ = (system_prompt, temperature, max_tokens)
+        if "LLM_JUDGE_ACCURACY_COVERAGE_TASK" in prompt:
+            return self._mock_judge_accuracy_coverage(prompt)
+        if "LLM_JUDGE_FAITHFULNESS_TASK" in prompt:
+            return self._mock_judge_faithfulness(prompt)
+        if "SEMANTIC_OPENIE_TASK" in prompt:
+            return self._mock_semantic_openie(prompt)
         if "GRAPH_COT_ITER_ACTION_TASK" in prompt:
             return self._mock_graph_cot_iter_action(prompt)
         if "GRAPH_COT_ITER_SYNTH_TASK" in prompt:
@@ -585,3 +591,96 @@ class MockLLMClient:
         if '{"answers":' in prompt:
             return json.dumps({"answers": chosen})
         return f"[Mock MCQA] Matched from context.\nAnswer: {', '.join(chosen)}"
+
+    def _mock_judge_accuracy_coverage(self, prompt: str) -> str:
+        ref_txt = ""
+        pred_txt = ""
+        if "Reference Answer:" in prompt and "Candidate Prediction:" in prompt:
+            after_ref = prompt.split("Reference Answer:", 1)[1]
+            ref_txt, pred_txt = after_ref.split("Candidate Prediction:", 1)
+        ref_sents = [s.strip() for s in re.split(r"[.!?\n。]+", ref_txt) if len(s.strip()) >= 8]
+        pred_sents = [s.strip() for s in re.split(r"[.!?\n。]+", pred_txt) if len(s.strip()) >= 8]
+        pred_low = pred_txt.lower()
+        ref_low = ref_txt.lower()
+
+        is_refusal = any(
+            kw in pred_low
+            for kw in ("does not mention", "not mentioned", "insufficient", "cannot be determined")
+        )
+        tp: list[str] = []
+        fp: list[str] = []
+        fn: list[str] = []
+        if not is_refusal:
+            for ps in pred_sents[:6]:
+                toks = {w for w in re.findall(r"[a-z0-9]{4,}", ps.lower())}
+                if toks and sum(1 for t in toks if t in ref_low) >= max(1, len(toks) // 3):
+                    tp.append(ps[:120])
+                else:
+                    fp.append(ps[:120])
+        covered = 0
+        for rs in ref_sents[:6]:
+            toks = {w for w in re.findall(r"[a-z0-9]{4,}", rs.lower())}
+            if not is_refusal and toks and sum(1 for t in toks if t in pred_low) >= max(1, len(toks) // 3):
+                covered += 1
+            else:
+                fn.append(rs[:120])
+        return json.dumps(
+            {
+                "tp_claims": tp,
+                "fp_claims": fp,
+                "fn_claims": fn,
+                "reference_facts_total": max(len(ref_sents[:6]), 1),
+                "reference_facts_covered": covered,
+                "is_refusal": is_refusal,
+            },
+            ensure_ascii=False,
+        )
+
+    def _mock_judge_faithfulness(self, prompt: str) -> str:
+        ctx_txt = ""
+        pred_txt = ""
+        if "Context:" in prompt and "Candidate Prediction:" in prompt:
+            after_ctx = prompt.split("Context:", 1)[1]
+            ctx_txt, pred_txt = after_ctx.split("Candidate Prediction:", 1)
+        ctx_low = ctx_txt.lower()
+        pred_sents = [s.strip() for s in re.split(r"[.!?\n。]+", pred_txt) if len(s.strip()) >= 8]
+        verdicts = []
+        for ps in pred_sents[:6]:
+            toks = {w for w in re.findall(r"[a-z0-9]{4,}", ps.lower())}
+            sup = 1 if (toks and sum(1 for t in toks if t in ctx_low) >= max(1, len(toks) // 3)) else 0
+            verdicts.append(
+                {
+                    "statement": ps[:120],
+                    "supported": sup,
+                    "reason": "Supported by context" if sup else "Not found in context",
+                }
+            )
+        return json.dumps({"verdicts": verdicts}, ensure_ascii=False)
+
+    def _mock_semantic_openie(self, prompt: str) -> str:
+        raw = json.loads(self._mock_extract(prompt))
+        pred_map = {"RELATED_TO": "ASSOCIATED_WITH", "CO_OCCURS_WITH": "ASSOCIATED_WITH"}
+        rels = [
+            {
+                "source": r["source"],
+                "target": r["target"],
+                "predicate": pred_map.get(r.get("relation_type", ""), r.get("relation_type", "CAUSES")),
+                "description": r.get("description", ""),
+            }
+            for r in raw.get("relations", [])
+        ]
+        if not rels and len(raw.get("entities", [])) >= 2:
+            e0 = raw["entities"][0]["name"]
+            e1 = raw["entities"][1]["name"]
+            rels.append(
+                {
+                    "source": e0,
+                    "target": e1,
+                    "predicate": "INDICATES",
+                    "description": f"{e0} indicates {e1}",
+                }
+            )
+        return json.dumps(
+            {"entities": raw.get("entities", []), "relations": rels},
+            ensure_ascii=False,
+        )

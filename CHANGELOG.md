@@ -6,6 +6,40 @@
 
 ---
 
+## [2026-11-26] Stage 3.4 HyperGraph Multi-Condition HyperEdges, Gated A-MEM Verified Write-Back & Workbench Tab 7
+- **提交类型**：`feat`
+- **变更背景**：完成第三阶段收官目标 Stage 3.4，引入 N 元多条件联合超边建模（HyperGraphRAG）与经四重防投毒门禁审核的自演化情景记忆写回（A-MEM），并在学习手册中补充面向企业级技术栈重构的 Protocol → Production 迁移蓝图。
+- **主要修改**：
+  - 扩展 `src/llm_graphrag_kg/core/schema.py`（`HyperEdge`、`VerifiedMemoryRecord`、`GraphAuditStats.hyperedge_count`）、`config.py`（`MemoryConfig`）与 `providers/storage/networkx_store.py`（`upsert_hyperedge`、`get_all_hyperedges`、`graph.json` 向后兼容持久化）。
+  - 新增 `src/llm_graphrag_kg/pipelines/hypergraph.py`（`create_hyperedge`、`mine_joint_hyperedges`、`match_hyperedges`、`format_hyperedge_context`）：自动挖掘共源多条件联合推理规则（`{Cond_A + Cond_B + ...} ===[JOINT_INDICATES]===> Target`），并在检索时精准提升联合命中目标实体与原文证据。
+  - 新增 `src/llm_graphrag_kg/pipelines/memory_store.py`（`VerifiedMemoryStore`、`check_memory_conflict`、`WriteBackGateDecision`）：强制执行 `GATE_1_GROUNDING (100%)` → `GATE_2_SUBSTANCE/CONFIDENCE` → `GATE_3_CONFLICT_NLI`（极性矛盾与同条件互斥根因拦截）→ `GATE_4_AUDIT_PERSIST`（带 UTC 时间戳 `valid_from` 与 `provenance_run_id` 持久化至 `verified_memories.jsonl` 并自动晋升为 `VERIFIED_JOINT_DIAGNOSIS` 超边）。
+  - 全链路接入 `pipelines/retriever.py`、`pipelines/workflow.py`、`viz/audit_report.py`、`cli.py`（新增 `mine-hyperedges`、`memory-list` 与 `query --writeback`）及 `viz/app.py`（升级至 7 标签页，新增 Tab 7「🧬 超边与自演化记忆」与问答页写回开关/命中提示）；新增单元测试 `tests/test_stage3_4_hypergraph_memory.py` 并更新 `tests/test_workbench.py`、`docs/evolution_and_papers_guide.md`（含企业级技术栈重构迁移地图）、`docs/stage3_nextgen_graphrag_plan.md` 与 `README.md`。
+- **验证方式**：
+  - `ruff check src tests scripts` 0 告警，`pytest -q` **45/45** 全部通过（含 7 标签页无头 `AppTest`），`scripts/privacy_check.py` 扫描通过。
+  - 真机验证（`qwen3.5:9b`）：工业故障诊断图谱自动挖掘 `6` 条多条件超边（`conf` 最高 `0.98`），FailureSensorIQ 挖掘 `64` 条多传感器联合超边；`tot_dfs --writeback` 经 4 重门禁放行写入 `mem_063584d27c0b` 并自动晋升超边，二次查询自动触发 `HyperGraph Matches (4 hits)` + `Recalled A-MEM` 且达到 4/4 步 `100.0%` Grounding。
+- **隐私与迁移自检**：生成的 `verified_memories.jsonl` 与超边持久化均隔离在 `.gitignore` 屏蔽的 `/storage/` 目录，无密钥、本机绝对路径或私有数据入库。
+
+---
+
+## [2026-11-26] Stage 3.3 Official 4D LLM-as-a-Judge, Checkpointed Semantic OpenIE & Industrial OREDA RDF/Turtle Importer
+- **提交类型**：`feat`
+- **变更背景**：完成 `docs/stage3_nextgen_graphrag_plan.md` 规划的 Stage 3.3 三大工程支柱：建立无词面失真与拒答伪装的官方口径四维语义裁判体系、用断点式定向语义 OpenIE 取代无向共现边、并打通工业 OREDA `FMEA_KG.ttl` 标准 RDF/Turtle 知识图谱零依赖导入与 `SHACL-lite` 全图质检。
+- **主要修改**：
+  - 新增 `src/llm_graphrag_kg/eval/__init__.py` 与 `src/llm_graphrag_kg/eval/llm_judge.py`（`LLMJudgeEvaluator`、`detect_refusal`、`fbeta_score`、`judge_grb_checkpoints`）：零 LangChain 依赖，对齐 `GraphRAG-Bench` 官方指标公式输出 **Answer Accuracy**（`0.75 * Factuality_F1 + 0.25 * CosineSim`）、**Faithfulness**、**Semantic Coverage** 与独立 **Refusal Rate**，支持任意已有评测断点 JSONL 的可恢复评分，并新增 CLI 命令 `judge-grb`。
+  - 升级 `src/llm_graphrag_kg/pipelines/extraction.py` 新增 `SemanticOpenIEExtractor` 与 `normalize_openie_predicate`（基于 `LLMHarness` 结构化校验 + JSONL 切片级断点续抽 + 禁用 `CO_OCCURS_WITH`），接入 `adapters/graphrag_bench.py`（`use_openie` / `openie_max_chunks` 及 `GRBQuestionOutcome.retrieved_context`）与 CLI `ingest-grb --openie`。
+  - 新增工业 RDF/Turtle 导入器 `src/llm_graphrag_kg/adapters/rdf_fmea.py`（零外部依赖 `parse_turtle_triples` + `ingest_fmea_rdf_ttl`，内置同名实体对齐、自环过滤、OREDA 语义类型映射、带源码行号的溯源文本卡片与 HippoRAG 2 同义边建索引）、`configs/fmea_kg_rdf.yaml`、CLI 命令 `ingest-rdf`、`viz/html_exporter.py` OREDA 配色与 `cli.py query` 按 `manifest.json` 自动对齐 Embedding 维度。
+  - 扩展 `providers/llm/mock.py` 离线裁判/OpenIE 确定性桩实现，新增 `tests/test_stage3_3_judge_openie_rdf.py`，并同步更新 `docs/evolution_and_papers_guide.md`、`docs/stage3_nextgen_graphrag_plan.md` 与 `README.md`。
+- **验证方式**：
+  - `ruff check src tests scripts` 0 告警，`pytest -q` **42/42** 全部通过，`scripts/privacy_check.py` 扫描通过。
+  - **官方四维 LLM-as-a-Judge 双域实测（`qwen3.5:9b` + `nomic-embed-text`）**：
+    - Medical (10Q)：`naive_rag` 出现 `10.0%` 拒答（摘要题 `20.0%`），Accuracy `74.2%` / Faithfulness `32.2%`；图谱范式全线 **0.0% 拒答**，`ppr_auto` 反超至 **`78.9%`** (+4.7pp)，**`ppr_cot_iter` 达 `82.2%` Accuracy (+8.0pp，Complex Reasoning `93.9%`) / `52.3%` Faithfulness (+20.1pp) / `75.0%` Sem. Coverage (+9.2pp)**；
+    - Novel (10Q)：**`ppr_multi_branch`** 全面夺冠，Accuracy **`78.1%`** (+4.8pp vs `naive_rag` `73.3%`)、Faithfulness **`33.9%`** (+14.9pp)、Sem. Coverage **`66.8%`** (+2.6pp)。
+  - **语义 OpenIE 实测**：Medical 12 切片抽取 `42` 实体 / `49` 定向三元组，**语义谓词纯度 `100.0%`**（零 `CO_OCCURS_WITH`）。
+  - **工业 `FMEA_KG.ttl` 实测**：解析 `1,192` 条三元组 / `94` 节点 → 规范化 `87` 实体 / `1,013` 关系 / `5` 社区（合并 `7` 重复、滤 `2` 自环），**`SHACL-lite` 100.0% PASS（0 Error / 0 Warning）**，`SHH` 故障码真机实问 4/4 步 **100.0% Grounding**。
+- **隐私与迁移自检**：导入存储（`storage/fmea_kg_rdf`、`storage/graphrag_bench_medical_openie_demo`）与四维裁判报告均严格隔离在 `.gitignore` 屏蔽目录，无密钥、本机绝对路径或私有数据入库。
+
+---
+
 ## [2026-11-25] Paper-Faithful Graph-CoT v2 & Multi-Depth Graph-ToT v2 (BFS/DFS) + Dual-Model Tiering (`4b` vs `9b` Ablation)
 - **提交类型**：`feat`
 - **变更背景**：对标原论文（Graph-CoT ACL 2024 / PoG AAAI 2025 / ToT NeurIPS 2023 / ToG & ToG-2 ICLR 2024-2025），将初版简化基线（单轮 CoT 与 Depth-1 扁平 ToT）同步升级为论文完整版迭代工具循环与多深度图边搜索（支持 BFS 束搜索与 DFS 真实回溯），并建立“轻量中间层 + 主力综合层”双模型分层架构，实证对比 `qwen3.5:4b` 与 `qwen3.5:9b` 作为中间层的质量与 8 GB 显存延迟边界。

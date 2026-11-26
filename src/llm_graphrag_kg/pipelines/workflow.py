@@ -18,7 +18,9 @@ from llm_graphrag_kg.harness.runtime import LLMHarness
 from llm_graphrag_kg.pipelines.community import CommunityDetector
 from llm_graphrag_kg.pipelines.extraction import KnowledgeExtractor
 from llm_graphrag_kg.pipelines.hipporag import SemanticGraphIndex, build_synonym_edges
+from llm_graphrag_kg.pipelines.hypergraph import mine_joint_hyperedges
 from llm_graphrag_kg.pipelines.ingestion import DocumentIngestor
+from llm_graphrag_kg.pipelines.memory_store import VerifiedMemoryStore
 from llm_graphrag_kg.pipelines.retriever import GraphRAGRetriever
 from llm_graphrag_kg.providers.factory import (
     create_embedding_client,
@@ -49,6 +51,7 @@ class GraphRAGPipeline:
         self.graph_store = graph_store or create_graph_store()
         self.vector_store = vector_store or create_vector_store()
         self.semantic_index = SemanticGraphIndex()
+        self.memory_store = VerifiedMemoryStore()
 
     def build(
         self,
@@ -123,17 +126,28 @@ class GraphRAGPipeline:
         )
         detector.detect_and_summarize(self.graph_store, llm=self.llm)
 
+        # Stage 3.4: Auto-mine multi-condition N-ary HyperEdges from grounded KG co-occurrence
+        hyperedges_mined = 0
+        if self.config.memory.enable_hypergraph:
+            mined_he = mine_joint_hyperedges(
+                self.graph_store,
+                min_conditions=self.config.memory.hyperedge_min_conditions,
+            )
+            hyperedges_mined = len(mined_he)
+
         # 4. Persist stores and manifest
         dst_dir.mkdir(parents=True, exist_ok=True)
         self.graph_store.save(dst_dir)
         self.vector_store.save(dst_dir)
         self.semantic_index.save(dst_dir)
+        self.memory_store.storage_dir = dst_dir
         manifest = {
             "doc_count": len(documents),
             "chunk_count": len(chunks),
             "embedding_provider": self.config.env.embedding_provider,
             "embedding_model": self.config.env.embedding_model,
             "synonym_edges_added": synonym_edges_added,
+            "hyperedges_mined": hyperedges_mined,
             "semantic_index": sem_stats,
             "documents": [
                 {"doc_id": d.doc_id, "source": d.source, "title": d.title} for d in documents
@@ -148,11 +162,12 @@ class GraphRAGPipeline:
         return compute_audit_stats(self.graph_store, self.vector_store, doc_count=len(documents))
 
     def load(self, storage_dir: Path | None = None) -> int:
-        """Load persisted graph, vector, and semantic stores from disk; returns document count."""
+        """Load persisted graph, vector, semantic, and verified memory stores from disk."""
         src_dir = storage_dir or self.config.storage_path
         self.graph_store.load(src_dir)
         self.vector_store.load(src_dir)
         self.semantic_index.load(src_dir)
+        self.memory_store.load(src_dir)
         manifest_path = src_dir / "manifest.json"
         if manifest_path.is_file():
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -168,10 +183,15 @@ class GraphRAGPipeline:
         auto_load: bool = True,
         enable_compact: bool | None = None,
         reasoning: str | None = None,
+        enable_writeback: bool | None = None,
     ) -> QueryResult:
-        """Run an online GraphRAG query with full subgraph, compaction, and reasoning trace."""
+        """Run an online GraphRAG query with full subgraph, compaction, reasoning, and optional A-MEM write-back."""
         if auto_load and not self.graph_store.get_all_entities():
             self.load(storage_dir)
+        if storage_dir is not None and self.memory_store.storage_dir is None:
+            self.memory_store.load(storage_dir)
+        elif self.memory_store.storage_dir is None:
+            self.memory_store.storage_dir = self.config.storage_path
 
         use_compact = (
             self.config.harness.enable_compact if enable_compact is None else enable_compact
@@ -226,9 +246,64 @@ class GraphRAGPipeline:
             rrf_k=self.config.retrieval.rrf_k,
             enable_query_to_triple=self.config.retrieval.enable_query_to_triple,
             top_k_triples=self.config.retrieval.top_k_triples,
+            enable_hypergraph=self.config.memory.enable_hypergraph,
+            hyperedge_match_threshold=self.config.memory.hyperedge_match_threshold,
+            memory_store=self.memory_store,
         )
-        return retriever.query(
+        result = retriever.query(
             question,
             mode=mode or self.config.retrieval.default_mode,
             reasoning=reasoning or self.config.reasoning.default_paradigm,
         )
+
+        # Stage 3.4: Optional gated verified self-evolving memory write-back (A-MEM)
+        use_wb = (
+            self.config.memory.enable_verified_writeback
+            if enable_writeback is None
+            else enable_writeback
+        )
+        if use_wb:
+            rm = result.metadata.get("reasoning")
+            g_score: float | None = None
+            ungrounded: list[str] = []
+            conf = 0.0
+            target_eids: list[str] = []
+            cited_chunks: list[str] = []
+            if isinstance(rm, dict):
+                ga = rm.get("grounding_audit")
+                if isinstance(ga, dict):
+                    g_score = float(ga.get("grounding_score", 0.0))
+                    ungrounded = list(ga.get("ungrounded_citations", []))
+                conf = float(rm.get("confidence", 0.0))
+                for br in rm.get("branches", []):
+                    if isinstance(br, dict) and br.get("status") == "selected":
+                        if br.get("target_entity_id"):
+                            target_eids.append(str(br["target_entity_id"]))
+                for st in rm.get("steps", []):
+                    if isinstance(st, dict):
+                        cited_chunks.extend(str(c) for c in st.get("cited_chunk_ids", []))
+            if not cited_chunks:
+                cited_chunks = [ev.chunk_id for ev in result.evidences[:4]]
+            if not target_eids:
+                for hm in result.metadata.get("matched_hyperedges", []):
+                    if isinstance(hm, dict) and hm.get("target_entity_id"):
+                        target_eids.append(str(hm["target_entity_id"]))
+            decision = self.memory_store.evaluate_and_write_back(
+                question=question,
+                answer=result.answer,
+                grounding_score=g_score,
+                ungrounded_citations=ungrounded,
+                confidence=conf,
+                condition_entity_ids=result.trace.seed_entity_ids[:5],
+                target_entity_ids=target_eids[:3],
+                source_chunk_ids=cited_chunks,
+                reasoning_paradigm=str(result.metadata.get("reasoning_paradigm", "auto")),
+                min_grounding=self.config.memory.min_writeback_grounding,
+                min_confidence=self.config.memory.min_writeback_confidence,
+                enable_conflict_check=self.config.memory.enable_conflict_check,
+                promote_to_hyperedge=self.config.memory.promote_memory_to_hyperedge,
+                graph_store=self.graph_store,
+            )
+            result.metadata["writeback_decision"] = decision.model_dump()
+
+        return result

@@ -1,0 +1,49 @@
+# Domain configuration for Industrial OREDA FMEA RDF/Turtle Knowledge Graph (Stage 3.3).
+# Usage:
+#   uv run llm-graphrag-kg ingest-rdf --ttl data/private/assetopsbench_eqa/IndustryAssetEQA/data/fmea_kg/FMEA_KG.ttl --config-file configs/fmea_kg_rdf.yaml
+#   uv run llm-graphrag-kg shacl-check --config-file configs/fmea_kg_rdf.yaml
+
+paths:
+  input_dir: "data/private/assetopsbench_eqa/IndustryAssetEQA/data/fmea_kg"
+  storage_dir: "storage/fmea_kg_rdf"
+  output_dir: "outputs/fmea_kg_rdf"
+
+chunking:
+  chunk_size: 800
+  chunk_overlap: 100
+
+extraction:
+  temperature: 0.0
+  max_entities_per_chunk: 20
+  entity_types:
+    - FailureModeCode
+    - AssetClass
+    - Component
+    - FailureConcept
+
+community:
+  resolution: 1.0
+  seed: 42
+  summarize_with_llm: false
+
+retrieval:
+  default_mode: "ppr"
+  top_k_chunks: 6
+  top_k_entities: 8
+  k_hops: 2
+  top_k_communities: 3
+  temperature: 0.1
+  hybrid_bm25_weight: 0.35
+  enable_query_to_triple: true
+  enable_synonym_edges: true
+  synonym_cosine_threshold: 0.88
+  max_synonyms_per_entity: 3
+
+reasoning:
+  default_paradigm: "auto"
+  enable_early_stop: true
+  early_stop_coverage_threshold: 0.80
+
+visualization:
+  default_color_by: "type"
+  physics_enabled: true

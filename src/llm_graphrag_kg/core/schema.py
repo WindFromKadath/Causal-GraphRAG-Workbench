@@ -56,6 +56,43 @@ class Relation(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class HyperEdge(BaseModel):
+    """N-ary multi-condition hyperedge (Stage 3.4 HyperGraphRAG).
+
+    Represents joint multi-condition inference such as:
+    `{Symptom_A, Symptom_B, Symptom_C} ===[JOINT_INDICATES]===> RootCause`
+    """
+
+    hyperedge_id: str
+    condition_entity_ids: list[str] = Field(default_factory=list)
+    target_entity_id: str
+    relation_type: str = "JOINT_INDICATES"
+    description: str = ""
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    weight: float = 1.0
+    source_chunk_ids: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class VerifiedMemoryRecord(BaseModel):
+    """Auditable episodic memory entry written back only after strict verification (Stage 3.4 A-MEM)."""
+
+    memory_id: str
+    question: str
+    conclusion: str
+    condition_entity_ids: list[str] = Field(default_factory=list)
+    target_entity_ids: list[str] = Field(default_factory=list)
+    source_chunk_ids: list[str] = Field(default_factory=list)
+    grounding_score: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    reasoning_paradigm: str = "auto"
+    valid_from: str
+    provenance_run_id: str
+    conflict_checked: bool = True
+    status: str = "verified"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class Community(BaseModel):
     """A detected cluster of closely related entities and its summary."""
 
@@ -105,6 +142,8 @@ class GraphAuditStats(BaseModel):
     entity_count: int
     relation_count: int
     community_count: int
+    hyperedge_count: int = 0
+    verified_memory_count: int = 0
     isolated_entities: list[str] = Field(default_factory=list)
     connected_components: int = 0
     entity_type_counts: dict[str, int] = Field(default_factory=dict)

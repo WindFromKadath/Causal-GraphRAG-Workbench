@@ -16,7 +16,11 @@ from llm_graphrag_kg.config import AppConfig
 from llm_graphrag_kg.core.interfaces import BaseEmbeddingClient, BaseLLMClient
 from llm_graphrag_kg.core.schema import Entity, GraphAuditStats, Relation
 from llm_graphrag_kg.pipelines.community import CommunityDetector
-from llm_graphrag_kg.pipelines.extraction import make_entity_id, make_relation_id
+from llm_graphrag_kg.pipelines.extraction import (
+    SemanticOpenIEExtractor,
+    make_entity_id,
+    make_relation_id,
+)
 from llm_graphrag_kg.pipelines.hipporag import SemanticGraphIndex, build_synonym_edges
 from llm_graphrag_kg.pipelines.ingestion import DocumentIngestor
 from llm_graphrag_kg.pipelines.workflow import GraphRAGPipeline
@@ -112,6 +116,7 @@ class GRBQuestionOutcome(BaseModel):
     llm_calls: int = 1
     latency_seconds: float
     prediction: str
+    retrieved_context: str = ""
 
 
 class GRBModeSummary(BaseModel):
@@ -256,6 +261,9 @@ def ingest_graphrag_bench_corpus(
     max_chars: int = 0,
     source_filter: str | None = None,
     fast_lexical: bool = True,
+    use_openie: bool = False,
+    openie_max_chunks: int = 0,
+    openie_resume: bool = True,
     llm: BaseLLMClient | None = None,
     embedder: BaseEmbeddingClient | None = None,
 ) -> GraphAuditStats:
@@ -308,7 +316,7 @@ def ingest_graphrag_bench_corpus(
             if used >= budget:
                 break
 
-    if not fast_lexical:
+    if not fast_lexical and not use_openie:
         pipeline = GraphRAGPipeline(config, llm=llm, embedder=embedder)
         return pipeline.build(out_docs, storage_dir=out_storage)
 
@@ -326,11 +334,42 @@ def ingest_graphrag_bench_corpus(
         vecs = active_embedder.embed([c.text for c in chunks])
         vs.add_chunks(chunks, vecs)
 
-    entities, relations = _extract_lexical_kg(chunks, domain=domain)
-    for e in entities:
-        gs.upsert_entity(e)
-    for r in relations:
-        gs.upsert_relation(r)
+    openie_stats_dict: dict[str, Any] | None = None
+    if use_openie:
+        active_llm = llm or create_llm_client(config)
+        extractor = SemanticOpenIEExtractor(
+            active_llm,
+            entity_types=config.extraction.entity_types,
+            domain=domain,
+            temperature=config.extraction.temperature,
+            max_entities_per_chunk=config.extraction.max_entities_per_chunk,
+        )
+        ckpt_file = out_storage / "openie_chunks.checkpoint.jsonl"
+        openie_ents, openie_rels, openie_stats = extractor.extract_chunks_checkpointed(
+            chunks,
+            checkpoint_path=ckpt_file,
+            resume=openie_resume,
+            max_chunks=openie_max_chunks,
+            progress_every=10,
+        )
+        openie_stats_dict = openie_stats.model_dump()
+        for e in openie_ents:
+            gs.upsert_entity(e)
+        for r in openie_rels:
+            gs.upsert_relation(r)
+        # If openie_max_chunks capped LLM extraction to a prefix, keep lexical coverage on remainder
+        if openie_max_chunks > 0 and openie_max_chunks < len(chunks):
+            lex_ents, lex_rels = _extract_lexical_kg(chunks[openie_max_chunks:], domain=domain)
+            for e in lex_ents:
+                gs.upsert_entity(e)
+            for r in lex_rels:
+                gs.upsert_relation(r)
+    else:
+        entities, relations = _extract_lexical_kg(chunks, domain=domain)
+        for e in entities:
+            gs.upsert_entity(e)
+        for r in relations:
+            gs.upsert_relation(r)
 
     # Stage 3.1 HippoRAG 2: SYNONYM_OF auto-linking + Semantic Entity/Triple Index
     synonym_edges_added = 0
@@ -368,6 +407,7 @@ def ingest_graphrag_bench_corpus(
         "embedding_model": config.env.embedding_model,
         "synonym_edges_added": synonym_edges_added,
         "semantic_index": sem_stats,
+        "openie_stats": openie_stats_dict,
         "documents": [
             {"doc_id": d.doc_id, "source": d.source, "title": d.title} for d in documents
         ],
@@ -616,6 +656,7 @@ def evaluate_graphrag_bench(
                     llm_calls=llm_calls,
                     latency_seconds=dt,
                     prediction=pred[:500],
+                    retrieved_context=retrieved_text[:2400],
                 )
                 outcomes.append(outcome)
                 ckpt_fh.write(outcome.model_dump_json() + "\n")

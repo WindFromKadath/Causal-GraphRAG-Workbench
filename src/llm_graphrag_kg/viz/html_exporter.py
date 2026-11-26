@@ -43,6 +43,10 @@ TYPE_PALETTE: dict[str, str] = {
     "NarrativeEntity": "#6366F1",
     "Location": "#14B8A6",
     "Event": "#F97316",
+    # Industrial OREDA FMEA RDF/Turtle ontology types
+    "FailureModeCode": "#EF4444",
+    "AssetClass": "#3B82F6",
+    "FailureConcept": "#F59E0B",
 }
 
 COMMUNITY_PALETTE: list[str] = [

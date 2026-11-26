@@ -100,23 +100,34 @@ flowchart TD
   - **v1 → v2 跃升（`9b` 统一）**：`cot_iter` Token-F1 从 `36.0%` 跃升至 **`44.7%`（+8.7pp）**、ROUGE-L `34.4%`、Grounding `94.5%`；`tot_bfs` / `tot_dfs` 检索证据召回飙至 **`86.7%`（#1）**，`tot_bfs` Grounding **`100.0%`**（`20.97s`），`tot_dfs` Token-F1 达 **`41.3%`（+9.9pp vs D1 ToT）** 并在 8/10 题上触发真实回溯（平均 `1.4` 次）；
   - **`4b` vs `9b` 中间层边界**：Complex Reasoning 上 `9b` 稳赢 `+2.4 ~ +3.6pp` F1；离散打分 `tot_bfs` 上 `4b` 反超 `9b`（F1 `39.5%` vs `39.1%`，ROUGE-L `29.3%` vs `27.4%`），`cot_iter (4b→9b)` 拿下最高回答覆盖率 `72.4%`；纯算力上 `4b` 提速 **`14.7% ~ 24.1%`**（Net 降 `3.1s ~ 6.7s`），但在 8 GB 单卡在线交互中每题换模税达 **`+7.09s ~ +11.16s`**——因此 **8 GB 单卡在线选统一 `9b`，≥12–16 GB 显存 / 云端双端点 / 离线两阶段批处理选 `4b → 9b`**。
 
-### Stage 3.3：官方口径 LLM-as-a-Judge 评测体系 + 语义三元组 / 工业 RDF 导入
+### Stage 3.3（已完成）：官方口径 LLM-as-a-Judge 评测体系 + 语义三元组 / 工业 RDF 导入
 - **目标**：建立无拒答失真的科学评测标尺，并打通结构化工业 RDF 知识图谱与高质量语义 OpenIE 抽图。
-- **核心改动**：
-  1. **LLM-as-a-Judge 四维评测器**（新增 `src/llm_graphrag_kg/eval/llm_judge.py`）：
-     - 直接参考本地已下载的 `GraphRAG-Bench` 官方实现（`data/private/graphrag_bench/Evaluation/metrics/`：`answer_accuracy.py`, `faithfulness.py`, `evidence_recall.py`, `coverage.py`）；
-     - 同步输出 **Answer Accuracy（语义正确率）**、**Faithfulness（忠实度）**、**Retrieval Evidence Recall**、**Coverage** 以及独立统计的 **Refusal Rate（拒答率）**，彻底替代易被短拒答欺骗的纯 `Token-F1`。
-  2. **语义三元组 OpenIE 升级**（升级 `adapters/graphrag_bench.py` 与 `pipelines/extraction.py`）：支持分批并行/断点式 LLM 语义三元组抽取，替换无类型 `CO_OCCURS_WITH` 共现边。
-  3. **工业 RDF / Turtle 导入器**（新增 `adapters/rdf_fmea.py`）：支持直接导入本地 `IndustryAssetEQA` 的 OREDA 工业 FMEA 知识图谱（`data/private/assetopsbench_eqa/IndustryAssetEQA/data/fmea_kg/FMEA_KG.ttl`），并自动通过 `SHACL-lite` 全量质检。
+- **核心落地**：
+  1. **LLM-as-a-Judge 四维评测器**（新增 `src/llm_graphrag_kg/eval/llm_judge.py` + CLI `judge-grb`）：
+     - 零 LangChain 依赖，完整对齐本地 `GraphRAG-Bench/Evaluation/metrics/` 官方公式，输出 **Answer Accuracy**（`0.75 * F1(TP,FP,FN) + 0.25 * CosineSim`）、**Faithfulness**、**Semantic Coverage**、**Ret EvRec** 与独立 **Refusal Rate**，支持任意已有 `grb_*.checkpoint.jsonl` 断点续评；
+  2. **断点式语义三元组 OpenIE**（升级 `pipelines/extraction.py` 新增 `SemanticOpenIEExtractor` + `adapters/graphrag_bench.py` 与 `ingest-grb --openie`）：
+     - 基于 `LLMHarness` 结构化校验与 JSONL 切片级断点续跑，禁用 `CO_OCCURS_WITH` 并规范化定向 `UPPER_SNAKE` 谓词；
+  3. **工业 OREDA RDF / Turtle 导入器**（新增 `src/llm_graphrag_kg/adapters/rdf_fmea.py`、`configs/fmea_kg_rdf.yaml` 与 CLI `ingest-rdf`）：
+     - 零外部 RDF 依赖解析 `FMEA_KG.ttl`，自动执行同名实体对齐、自环过滤、OREDA 语义类型归类、带行号原文溯源卡片生成及 HippoRAG 2 同义边建索引；同步在 `cli.py query` 新增按 `manifest.json` 自动对齐 Embedding 维度。
+- **实测验收结果**（`qwen3.5:9b` + `nomic-embed-text`）：
+  - **官方四维裁判双域验证**：
+    - Medical (10Q)：`naive_rag` 出现 `10.0%` 拒答（摘要题 `20.0%`），Accuracy `74.2%` / Faithfulness `32.2%`；图谱范式全线 **0.0% 拒答**，`ppr_auto` Accuracy **`78.9%` (+4.7pp)**，**`ppr_cot_iter` 达 `82.2%` Accuracy (+8.0pp，Complex Reasoning `93.9%`) / `52.3%` Faithfulness (+20.1pp) / `75.0%` Sem. Coverage (+9.2pp)**；
+    - Novel (10Q)：**`ppr_multi_branch`** 在四维裁判下全面登顶：**`78.1%` Accuracy (+4.8pp vs `naive_rag` `73.3%`) / `33.9%` Faithfulness (+14.9pp，1.78×) / `66.8%` Sem. Coverage (+2.6pp)**；
+  - **语义 OpenIE**：12 医疗切片实测抽取 `42` 实体 / `49` 定向三元组，**语义谓词纯度 `100.0%`**（`DIAGNOSES:9` / `LOCATED_IN:8` / `CAUSED_BY:8` / `CAUSES:6` / `PART_OF:5` / `TREATS:4` 等）；
+  - **工业 `FMEA_KG.ttl` 导入与 SHACL**：解析 `1,192` 条三元组 / `94` 节点 → 合并 `7` 重复、滤除 `2` 自环 → `87` 实体 / `1,013` 关系 / `5` 社区，**`SHACL-lite` 100.0% PASS（0 Error / 0 Warning）**，OREDA 代码 `SHH` 实问达成 4/4 步 **100.0% Grounding**。
 
-### Stage 3.4：HyperGraph 多条件超边建模 + 验证后自演化记忆写回（A-MEM）+ 工作台联动
+### Stage 3.4（已完成）：HyperGraph 多条件超边建模 + 验证后自演化记忆写回（A-MEM）+ 工作台联动
 - **目标**：吸收 2025–2026 前沿超图与自演化记忆范式，形成“检索 → 推理 → 校验 → 经验沉淀”闭环。
-- **核心改动**：
-  1. **轻量 HyperGraph 超边建模**（扩展 `core/schema.py` 与 `NetworkXGraphStore`）：
-     - 支持 `HyperEdge`（如 `{2倍频振动升高, 轴承温升异常, 电机定子电流波动} ===[JOINT_INDICATES]===> 轴系不对中`），在二分图表示上无缝兼容现有 `BaseGraphStore`、PPR 扩散与 PyVis 可视化。
-  2. **验证后自演化记忆写回（Verified Write-Back）**（参考 **A-MEM** NeurIPS 2025 与 **IndustryAssetEQA** `nli_checks.py` / `episodic_store.py`）：
-     - 仅当推理结果通过 `GroundingAudit (score=1.0)` 且经轻量一致性校验无冲突时，才允许作为带时间戳与来源指针（`valid_from`, `provenance_run_id`）的“已验证诊断经验节点”写回图谱，严防知识投毒。
-  3. **Streamlit 工作台 Stage 3 面板**：新增路由路径可视化（Fast / Competitive ToT / Multi-Branch Aggregation）、LLM-Judge 评测对比视图与超边/写回经验节点筛选。
+- **核心落地**：
+  1. **轻量 HyperGraph 超边建模**（扩展 `core/schema.py`、`config.py`、`NetworkXGraphStore`，新增 `src/llm_graphrag_kg/pipelines/hypergraph.py`）：
+     - 原生支持 N 元 `HyperEdge`（如 `{2倍频振动升高, 滚动轴承, 弹性联轴器} ===[JOINT_INDICATES]===> 轴系不对中`），支持 `mine_joint_hyperedges` 自动共源挖掘、`match_hyperedges` 联合条件匹配与 `graph.json` 向后兼容持久化，无缝接入全推理模式上下文；
+  2. **4 重防投毒自演化记忆写回（Verified Write-Back）**（新增 `src/llm_graphrag_kg/pipelines/memory_store.py`，参考 **A-MEM** NeurIPS 2025 与 **IndustryAssetEQA**）：
+     - 严格执行 `GATE_1_GROUNDING (100%)` → `GATE_2_SUBSTANCE/CONFIDENCE` → `GATE_3_CONFLICT_NLI`（极性反转与同条件互斥根因拦截）→ `GATE_4_AUDIT_PERSIST`（带 UTC `valid_from` 与 `provenance_run_id` 写入 `verified_memories.jsonl` 并可选自动晋升为 `VERIFIED_JOINT_DIAGNOSIS` 超边）；
+  3. **CLI 与 Streamlit 工作台 Stage 3.4 联动**：新增 `mine-hyperedges`、`memory-list` 与 `query --writeback`；工作台升级至 7 标签页（新增 Tab 7「🧬 超边与自演化记忆」与问答页写回开关/命中横幅）。
+- **实测验收结果**：
+  - 工业故障诊断图谱自动挖掘 `6` 条联合超边（`conf` 最高 `0.98`），FailureSensorIQ 自动挖掘 `64` 条多传感器联合故障超边；
+  - 4 重防投毒门禁单测 100% 拦截未扎根、拒答、低置信与矛盾投毒；真机 `qwen3.5:9b` 运行 `tot_dfs --writeback` 写回 `mem_063584d27c0b` 并在二次查询自动召回（`HyperGraph Matches 4 hits` + `Recalled A-MEM` + 4/4 步 `100.0%` Grounding）；
+  - `ruff` 0 告警、`pytest` **45/45** 通过（含 7 标签页无头 `AppTest`）、`privacy_check` PASS。
 
 ---
 

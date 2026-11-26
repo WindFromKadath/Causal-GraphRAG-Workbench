@@ -80,7 +80,7 @@ class HarnessConfig(BaseModel):
 
 
 class ReasoningConfig(BaseModel):
-    default_paradigm: str = "direct"  # auto | direct | cot | tot | multi_branch
+    default_paradigm: str = "direct"  # auto | direct | cot | cot_iter | tot | multi_branch | tot_bfs | tot_dfs
     tot_beam_width: int = 3
     tot_max_depth: int = 2
     tot_max_llm_calls: int = 6
@@ -88,6 +88,19 @@ class ReasoningConfig(BaseModel):
     enable_early_stop: bool = True
     early_stop_coverage_threshold: float = 0.80
     multi_branch_min_score: float = 0.25
+
+
+class MemoryConfig(BaseModel):
+    """Stage 3.4 HyperGraph multi-condition hyperedges & gated self-evolving memory config."""
+
+    enable_hypergraph: bool = True
+    hyperedge_min_conditions: int = 2
+    hyperedge_match_threshold: float = 0.60
+    enable_verified_writeback: bool = False  # Strict opt-in to prevent unintended graph mutation
+    min_writeback_grounding: float = 1.0
+    min_writeback_confidence: float = 0.75
+    enable_conflict_check: bool = True
+    promote_memory_to_hyperedge: bool = True
 
 
 class EnvSettings(BaseSettings):
@@ -135,6 +148,7 @@ class AppConfig(BaseModel):
     visualization: VisualizationConfig = Field(default_factory=VisualizationConfig)
     harness: HarnessConfig = Field(default_factory=HarnessConfig)
     reasoning: ReasoningConfig = Field(default_factory=ReasoningConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     env: EnvSettings = Field(default_factory=EnvSettings)
 
     def resolve_path(self, rel_or_abs: str | Path) -> Path:

@@ -17,11 +17,17 @@ from llm_graphrag_kg.adapters.failuresensoriq import (
     plan_failuresensoriq_stress_suite,
     run_failuresensoriq_stress_suite,
 )
+from llm_graphrag_kg.adapters.rdf_fmea import (
+    RDFImportReport,
+    ingest_fmea_rdf_ttl,
+    parse_turtle_triples,
+)
 
 __all__ = [
     "DEFAULT_STRESS_SUITES",
     "EvaluationSummary",
     "IngestStats",
+    "RDFImportReport",
     "SENSOR_CANONICAL_MAP",
     "StressSuiteReport",
     "build_failuresensoriq_kg",
@@ -29,9 +35,11 @@ __all__ = [
     "compute_set_f1",
     "detect_asset_from_question",
     "evaluate_failuresensoriq",
+    "ingest_fmea_rdf_ttl",
     "normalize_option_id",
     "normalize_sensor_name",
     "parse_option_answers",
+    "parse_turtle_triples",
     "plan_failuresensoriq_stress_suite",
     "run_failuresensoriq_stress_suite",
 ]

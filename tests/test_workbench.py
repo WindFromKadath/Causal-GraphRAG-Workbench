@@ -194,7 +194,7 @@ def test_streamlit_workbench_headless_render() -> None:
     assert len(at.title) == 1
     # Verify Stage 2.4 defaults to locked primary dataset `configs/failuresensoriq.yaml`
     assert at.sidebar.selectbox[0].value == "configs/failuresensoriq.yaml"
-    assert len(at.tabs) == 6
+    assert len(at.tabs) == 7
 
 
 def test_tot_tree_exporter_builds_interactive_html_for_tot_and_cot(tmp_path: Path) -> None:

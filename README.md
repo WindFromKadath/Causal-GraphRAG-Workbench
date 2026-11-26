@@ -25,6 +25,7 @@ LLM-GraphRAG-KG/
 │   ├── default.yaml                 # 通用默认运行参数
 │   ├── fault_diagnosis.yaml         # 工业工程部署与故障诊断领域本体配置
 │   ├── failuresensoriq.yaml         # IBM FailureSensorIQ（Apache-2.0）标准数据集配置
+│   ├── fmea_kg_rdf.yaml             # 工业 OREDA FMEA RDF/Turtle 知识图谱配置（Stage 3.3）
 │   ├── graphrag_bench_medical.yaml  # GraphRAG-Bench Medical 医学多跳数据集（Stage 3.1 稠密+HippoRAG 2）
 │   └── graphrag_bench_novel.yaml    # GraphRAG-Bench Novel 长篇叙事数据集（Stage 3.1 稠密+HippoRAG 2）
 ├── data/
@@ -81,6 +82,15 @@ uv run llm-graphrag-kg eval-fsiq --questions data/private/failuresensoriq/failur
 
 # 9. 四级难度极限压测（每集 100 题，含 10选1 / 5选2多选 / 扰动集，支持极简 JSON 提速与断点续跑）
 uv run llm-graphrag-kg stress-fsiq --data-dir data/private/failuresensoriq --limit 100 --no-think --num-ctx 32768
+
+# 10. Stage 3.3：工业 OREDA RDF/Turtle 一键导入 + SHACL-lite 质检，以及官方四维 LLM-as-a-Judge 评测
+uv run llm-graphrag-kg ingest-rdf --ttl data/private/assetopsbench_eqa/IndustryAssetEQA/data/fmea_kg/FMEA_KG.ttl --config-file configs/fmea_kg_rdf.yaml --run-shacl
+uv run llm-graphrag-kg judge-grb --questions data/private/graphrag_bench/Datasets/Questions/medical_questions.json --checkpoint "naive_rag=outputs/graphrag_bench/stage31_medical_qwen35_9b/grb_naive_rag.checkpoint.jsonl" --checkpoint "ppr_auto=outputs/graphrag_bench/stage32_medical_qwen35_9b/grb_ppr_auto.checkpoint.jsonl" --limit 10 --no-think
+
+# 11. Stage 3.4：HyperGraph 多条件超边挖掘 + 4 重防投毒自演化记忆写回（A-MEM）
+uv run llm-graphrag-kg mine-hyperedges --config-file configs/fault_diagnosis.yaml
+uv run llm-graphrag-kg query "离心泵机组同时出现2倍频振动升高、轴承温升异常和电机定子电流波动，根因是什么？" --config-file configs/fault_diagnosis.yaml --mode ppr --reasoning tot_dfs --writeback
+uv run llm-graphrag-kg memory-list --config-file configs/fault_diagnosis.yaml
 ```
 
 ## 隐私与提交流程

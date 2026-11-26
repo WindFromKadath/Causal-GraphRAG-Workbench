@@ -40,12 +40,16 @@ def compute_audit_stats(
         key=lambda item: (-item[1], item[0]),
     )
 
+    hyperedges = (
+        graph_store.get_all_hyperedges() if hasattr(graph_store, "get_all_hyperedges") else []
+    )
     return GraphAuditStats(
         doc_count=resolved_docs,
         chunk_count=len(chunks),
         entity_count=len(entities),
         relation_count=len(relations),
         community_count=len(communities),
+        hyperedge_count=len(hyperedges),
         isolated_entities=sorted(isolated),
         connected_components=components,
         entity_type_counts=type_counts,

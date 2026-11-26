@@ -24,6 +24,14 @@ from llm_graphrag_kg.core.schema import (
 from llm_graphrag_kg.harness.context_compactor import ContextCompactor
 from llm_graphrag_kg.harness.runtime import LLMHarness
 from llm_graphrag_kg.pipelines.hipporag import SemanticGraphIndex
+from llm_graphrag_kg.pipelines.hypergraph import (
+    format_hyperedge_context,
+    match_hyperedges,
+)
+from llm_graphrag_kg.pipelines.memory_store import (
+    VerifiedMemoryStore,
+    format_recalled_memories_context,
+)
 from llm_graphrag_kg.reasoning.cot import GraphCoTEngine
 from llm_graphrag_kg.reasoning.cot_iterative import IterativeGraphCoTEngine
 from llm_graphrag_kg.reasoning.router import route_query
@@ -69,6 +77,9 @@ class GraphRAGRetriever:
         rrf_k: int = 60,
         enable_query_to_triple: bool = True,
         top_k_triples: int = 8,
+        enable_hypergraph: bool = True,
+        hyperedge_match_threshold: float = 0.60,
+        memory_store: VerifiedMemoryStore | None = None,
     ) -> None:
         self.llm = llm
         self.embedder = embedder
@@ -95,6 +106,9 @@ class GraphRAGRetriever:
         self.rrf_k = rrf_k
         self.enable_query_to_triple = enable_query_to_triple
         self.top_k_triples = top_k_triples
+        self.enable_hypergraph = enable_hypergraph
+        self.hyperedge_match_threshold = hyperedge_match_threshold
+        self.memory_store = memory_store
 
     def query(
         self,
@@ -288,6 +302,70 @@ class GraphRAGRetriever:
                 )
 
         evidences = list(evidence_by_chunk.values())
+
+        # Stage 3.4: Multi-condition HyperGraph matching & Verified Episodic Memory recall
+        matched_hyperedges = []
+        if self.enable_hypergraph and hasattr(self.graph_store, "get_all_hyperedges"):
+            all_he = self.graph_store.get_all_hyperedges()
+            if all_he:
+                all_ent_map = {e.entity_id: e for e in self.graph_store.get_all_entities()}
+                active_ids = list(
+                    dict.fromkeys(
+                        [e.entity_id for e in seed_entities]
+                        + [e.entity_id for e in expanded_entities[:12]]
+                    )
+                )
+                matched_hyperedges = match_hyperedges(
+                    active_ids,
+                    all_he,
+                    all_ent_map,
+                    min_match_ratio=self.hyperedge_match_threshold,
+                )
+                # Ensure matched hyperedge targets & their provenance chunks enter the reasoning pool
+                exp_id_set = {e.entity_id for e in expanded_entities}
+                for m in matched_hyperedges:
+                    tgt_ent = all_ent_map.get(m.target_entity_id)
+                    if tgt_ent is not None and tgt_ent.entity_id not in exp_id_set:
+                        expanded_entities.append(tgt_ent)
+                        exp_id_set.add(tgt_ent.entity_id)
+                    for cid in m.source_chunk_ids:
+                        if cid not in evidence_by_chunk:
+                            ch = self.vector_store.get_chunk(cid)
+                            if ch is not None:
+                                evidence_by_chunk[cid] = EvidenceItem(
+                                    chunk_id=ch.chunk_id,
+                                    doc_id=ch.doc_id,
+                                    source=ch.source,
+                                    text=ch.text,
+                                    score=round(m.joint_score, 4),
+                                    matched_via="hypergraph",
+                                )
+                evidences = list(evidence_by_chunk.values())
+
+        recalled_memories = (
+            self.memory_store.retrieve_relevant(
+                question, [e.entity_id for e in seed_entities], top_k=3
+            )
+            if self.memory_store is not None
+            else []
+        )
+        hypergraph_note = format_hyperedge_context(matched_hyperedges)
+        memory_note = format_recalled_memories_context(recalled_memories)
+        if hypergraph_note or memory_note:
+            supplemental_blocks = [b for b in (hypergraph_note, memory_note) if b]
+            # Attach supplemental joint rules/memories onto community summary slot so all reasoning
+            # engines (direct/cot/tot/multi_branch/cot_iter/tot_bfs/tot_dfs) seamlessly observe them
+            selected_communities = [
+                *selected_communities,
+                Community(
+                    community_id=-34,
+                    title="Stage 3.4 HyperGraph & Verified Memory Context",
+                    summary="\n\n".join(supplemental_blocks),
+                    entity_ids=[m.target_entity_id for m in matched_hyperedges],
+                    relation_count=len(matched_hyperedges),
+                ),
+            ]
+
         compaction_meta: dict[str, object] | None = None
         reasoning_meta: dict[str, object] | None = None
         route_decision_meta: dict[str, object] | None = None
@@ -468,6 +546,10 @@ class GraphRAGRetriever:
             metadata["reasoning"] = reasoning_meta
         if route_decision_meta is not None:
             metadata["route_decision"] = route_decision_meta
+        if matched_hyperedges:
+            metadata["matched_hyperedges"] = [m.model_dump() for m in matched_hyperedges]
+        if recalled_memories:
+            metadata["recalled_memories"] = [r.model_dump() for r in recalled_memories]
         if ppr_top_scores:
             metadata["ppr_top_nodes"] = dict(
                 sorted(ppr_top_scores.items(), key=lambda kv: -kv[1])[:8]

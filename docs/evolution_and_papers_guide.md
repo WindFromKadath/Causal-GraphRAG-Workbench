@@ -19,9 +19,10 @@ flowchart LR
     S30["Stage 3.0: 本地算力底座定型<br/>Qwen3.5 Hybrid Attention + num_gpu<br/>(打穿 8GB 显存延迟瓶颈)"]
     S31["Stage 3.1: 下一代检索底座<br/>BM25+Dense RRF + HippoRAG 2<br/>(打穿假向量召回天花板)"]
     S32["Stage 3.2 & v2 论文级基线<br/>路由+并集聚合+迭代CoT+多深度ToT<br/>(4b vs 9b 中间层双模型消融)"]
-    S3N["Stage 3.3–3.4 (规划中)<br/>LLM-Judge + 语义OpenIE<br/>+ HyperGraph + A-MEM 记忆"]
+    S33["Stage 3.3: 官方Judge·OpenIE·RDF<br/>四维语义裁判 + 断点语义抽图<br/>+ 工业 OREDA FMEA_KG.ttl"]
+    S34["Stage 3.4: HyperGraph & A-MEM<br/>N元多条件超边 + 4重防投毒写回<br/>+ 7标签页闭环工作台"]
 
-    S1 --> S21 --> S22 --> S23 --> S24 --> S30 --> S31 --> S32 --> S3N
+    S1 --> S21 --> S22 --> S23 --> S24 --> S30 --> S31 --> S32 --> S33 --> S34
 ```
 
 ---
@@ -40,8 +41,8 @@ flowchart LR
 | **Stage 3.1** | 已完成 | Ollama 原生稠密嵌入（SQLite 缓存）+ 双语 **BM25 + Dense RRF** + **HippoRAG 2** | **HippoRAG 2** *(ICML 2025)* + **Okapi BM25** & **RRF** *(SIGIR 2009)* | `local_hash` 假向量无法识别跨词语义，锁死开放语料召回上限 | Medical `Ret EvRec` 达 **79.8%**（≥75% PASS），Novel 达 **72.4%**（≥65% PASS） |
 | **Stage 3.2** | 已完成 | 自适应任务路由器 + 非剪枝多分支聚合 + 取消 `tot.py` 截断 + 动态早停 | **When to use Graphs in RAG** + **OpenSPG KAG** + **ToG-2** + **Search-R1** | `ppr_tot` 单胜剪枝 + 220 截断导致多面摘要“高召回、低覆盖”剪刀差 | 摘要覆盖率暴涨 `+36.5~+43.2pp`；双域 Complex F1 达 `41.9%/29.6%` 第 1；延迟较 S2 降 **-63.6%**，`multi_branch` **100% 溯源** |
 | **Stage 3.2+ (v2 基线)** | 已完成 | 论文完整版迭代 `Graph-CoT v2`（`cot_iter`）+ 多深度 `Graph-ToT v2`（`tot_bfs`/`tot_dfs` 真回溯）+ `4b vs 9b` 双模型分层消融 | **Graph-CoT** *(ACL 2024)* + **PoG** *(AAAI 2025)* + **ToT** *(NeurIPS 2023)* + **ToG/ToG-2** *(ICLR 2024/2025)* | 旧 CoT 为单轮结构化生成、旧 ToT 为 Depth-1 扁平展开无真回溯；需量化轻重双模型分工边界 | 同 10 题：`cot_iter` F1 达 **`44.7%`（+8.7pp）**；`tot_bfs/dfs` 检索召回飙至 **`86.7%`**、`tot_dfs` F1 **`41.3%`（+9.9pp）** 触发真回溯 `8/10` 题；量化出 `4b` 净算力快 `15%–24%` 但 8 GB 单卡换模税 `+7.1~11.2s` 的硬件边界 |
-| **Stage 3.3** | 规划中 | 官方口径四维 **LLM-as-a-Judge** + 语义 OpenIE + 工业 OREDA `FMEA_KG.ttl` 导入 | **GraphRAG-Bench Eval** + **IndustryAssetEQA** *(ACL 2026)* | 纯 `Token-F1` 易被 0% 召回短拒答欺骗；共现边缺乏语义方向 | 目标：建立无拒答失真的语义评测标尺，打通标准化工业 RDF/Turtle 知识导入 |
-| **Stage 3.4** | 规划中 | 轻量 **HyperGraph** 多条件超边 + 验证后自演化记忆写回 + 工作台联动 | **HyperGraphRAG** *(NeurIPS 2025)* + **A-MEM** *(NeurIPS 2025)* | 二元边难表达“多症状联合推出单根因”；历史正确排障经验无法沉淀 | 目标：支持 N 元联合因果推理，并建立经 Grounding+NLI 门禁过滤的无投毒记忆写回 |
+| **Stage 3.3** | 已完成 | 官方口径四维 **LLM-as-a-Judge** + 断点式语义 **OpenIE** + 工业 OREDA `FMEA_KG.ttl` RDF 导入 | **GraphRAG-Bench Eval** + **IndustryAssetEQA** *(ACL 2026)* + **W3C Turtle/SHACL** | 纯 `Token-F1` 易被拒答/同义改写失真；共现边缺语义方向；工业 RDF 无原生入口 | Medical `ppr_cot_iter` 语义 Accuracy **`82.2%`** (+8.0pp) / Faithfulness **`52.3%`** (+20.1pp) / 0% 拒答；Novel `multi_branch` Accuracy **`78.1%`** (+4.8pp)；OpenIE 语义谓词 **`100%`**；`FMEA_KG.ttl` **100% SHACL-lite PASS** |
+| **Stage 3.4** | 已完成 | 轻量 **HyperGraph** 多条件超边 + 4 重防投毒自演化记忆写回（**A-MEM**）+ 工作台 Tab 7 联动 | **HyperGraphRAG** *(NeurIPS 2025)* + **A-MEM** *(NeurIPS 2025)* + **IndustryAssetEQA** | 二元边难表达“多症状联合推出单根因”；历史正确排障经验无法安全沉淀复用 | 故障诊断自动挖掘 `6` 条 / FailureSensorIQ 挖掘 `64` 条 N 元联合超边；4 重门禁 100% 拦截未扎根/拒答/极性矛盾投毒；真机 `tot_dfs --writeback` 写回 `mem_063584d27c0b` 并在二次查询自动召回（4/4 步 `100%` Grounding），全套 `pytest` **45/45** 通过 |
 
 ---
 
@@ -223,7 +224,7 @@ flowchart LR
 
 ---
 
-### Stage 3.2+ 基线深化：论文完整版 `Graph-CoT v2` & 多深度 `Graph-ToT v2 (BFS/DFS)` + `4b vs 9b` 中间层消融（当前最新已完成）
+### Stage 3.2+ 基线深化：论文完整版 `Graph-CoT v2` & 多深度 `Graph-ToT v2 (BFS/DFS)` + `4b vs 9b` 中间层消融
 - **升级前痛点（Why）**：
   - 对标原论文核查发现，Stage 2.2/2.3 的初版基线属于“工程简化版”：① 初版 `Graph-CoT` 为单轮 JSON 生成，缺少 `Thought → Graph-Action → Observation` 真正的多轮图谱交互工具循环；② 初版 `Graph-ToT` 仅在 Depth-1 扁平生成 3 个分支并做 1 次横向剪枝，缺少论文中的多深度真实图边扩展（Depth 1→2）、离散状态评估（`sure / likely / impossible`）以及 **BFS 束搜索** / **DFS 深度探索 + 死胡同真实回溯（Backtracking）**。
   - 同时，引入多轮中间规划与分支评估后，必须验证“轻量模型（`qwen3.5:4b`）做中间层 + 主力模型（`qwen3.5:9b`）做最终综合”与“全链路统一 `9b`”在质量、搜索行为与 8 GB 显存真实延迟上的量化差异。
@@ -248,16 +249,62 @@ flowchart LR
 
 ---
 
-## 4. 下一阶段预告卡片（Stage 3.3 ~ 3.4 待落地）
+### Stage 3.3：官方口径四维 LLM-as-a-Judge + 断点式语义 OpenIE + 工业 OREDA RDF 导入
+- **升级前痛点（Why）**：
+  - 早期沿用的词面 `Token-F1` 存在两大失真：① 无法识别语义等价的同义改写（例如丰富的多分支综述答案反而在词面 F1 上显得更低）；② 无法把“检索失败后的保守短拒答”单独剥离，容易掩盖 `naive_rag` 的漏检缺陷。
+  - 开放长文本快抽模式仍产出大量无向 `CO_OCCURS_WITH` 共现边，缺少方向性语义谓词；同时工业界大量存量知识以标准 **RDF / Turtle (`.ttl`)** 形式沉淀（如 OREDA `FMEA_KG.ttl`），缺乏一键导入、去重纠错与 `SHACL-lite` 质检通道。
+- **参考论文与范式（Paper & Paradigm）**：
+  - **GraphRAG-Bench Official Evaluation**（`answer_accuracy.py` / `faithfulness.py` / `coverage.py` / `evidence_recall.py`）：采用 **`Answer Accuracy = 0.75 * F1(TP, FP, FN) + 0.25 * CosineSim`**、逐断言上下文 **Faithfulness**、参考事实 **Semantic Coverage** 与独立 **Refusal Rate** 四维语义标尺。
+  - **IndustryAssetEQA**（ACL 2026，OREDA `FMEA_KG.ttl` 工业知识图谱）+ **W3C Turtle / SHACL-lite**：工业标准三元组零依赖解析、跨 URI 同名实体对齐（Entity Resolution）、自环过滤与带行号原文溯源卡片构建。
+- **本项目源码落点（Code Map）**：
+  - 官方四维语义裁判：`src/llm_graphrag_kg/eval/llm_judge.py`（`LLMJudgeEvaluator` / `detect_refusal` / `judge_grb_checkpoints`），CLI 命令 `llm-graphrag-kg judge-grb`
+  - 断点式定向语义 OpenIE：`src/llm_graphrag_kg/pipelines/extraction.py`（`SemanticOpenIEExtractor` / `normalize_openie_predicate`），接入 `adapters/graphrag_bench.py` 与 `ingest-grb --openie`
+  - 工业 OREDA RDF/Turtle 导入器：`src/llm_graphrag_kg/adapters/rdf_fmea.py`（`parse_turtle_triples` / `ingest_fmea_rdf_ttl`）、`configs/fmea_kg_rdf.yaml`、CLI 命令 `llm-graphrag-kg ingest-rdf` 与 `cli.py query` 自动嵌入对齐
+  - 单元测试：`tests/test_stage3_3_judge_openie_rdf.py`
+- **升级优势（Evidence）**：
+  - **四维 LLM-as-a-Judge 彻底揭穿旧 `Token-F1` 失真（`qwen3.5:9b` + `nomic-embed-text`）**：
+    - **Medical (10Q)**：`naive_rag` 出现 `10.0%` 拒答（摘要题高达 **`20.0%`**），Accuracy `74.2%` / Faithfulness `32.2%`；而图谱全线 **0.0% 拒答**，**`ppr_auto` 反超至 `78.9%` (+4.7pp)**，**`ppr_cot_iter` 登顶 `82.2%` Accuracy (+8.0pp，Complex Reasoning 高达 `93.9%`) / `52.3%` Faithfulness (+20.1pp) / `75.0%` Sem. Coverage (+9.2pp)**！
+    - **Novel (10Q)**：旧 Token-F1 显得偏低的 **`ppr_multi_branch`** 在官方四维裁判下**全面夺冠**：**`78.1%` Accuracy (+4.8pp vs `naive_rag` `73.3%`)、`33.9%` Faithfulness (+14.9pp，近 1.8×)、`66.8%` Sem. Coverage (+2.6pp)**。
+  - **语义 OpenIE 纯度 100%**：实测 Medical 12 切片断点抽取产出 `42` 实体 / `49` 定向语义边，**`semantic_predicate_ratio = 1.0`**（零 `CO_OCCURS_WITH`，真实抽取 `DIAGNOSES` / `LOCATED_IN` / `CAUSED_BY` / `CAUSES` / `PART_OF` / `TREATS` 等）。
+  - **工业 `FMEA_KG.ttl` 零误差导入**：解析 `1,192` 条原始三元组 / `94` 节点 → 合并 `7` 组重复标签、滤除 `2` 条自环 → 产出 `87` 规范实体 / `1,013` 有向关系 / `5` 社区，**`SHACL-lite` 一次达成 `100.0% PASS`（0 Error / 0 Warning）**；实问 OREDA 代码 `SHH` 触发 `auto` 早停、压缩 `-76.4%`、4/4 步 **100.0% Grounding** 精准命中 `Spurious high alarm level` 及受影响安全组件。
+- **学习要点（Takeaway）**：
+  - **评测口径决定迭代方向**：词面 `Token-F1` 会系统性低估高质量改写与多分支归纳、纵容短拒答；引入官方四维语义裁判后，GraphRAG 在准确度、忠实度与零拒答上的真实优势才被完整看见。
 
-> 详细工程设计见 [stage3_nextgen_graphrag_plan.md](stage3_nextgen_graphrag_plan.md)，完成每个子阶段后将同步回填实测数据至本手册。
+---
 
-1. **Stage 3.3：官方口径 LLM-as-a-Judge + 语义 OpenIE + 工业 RDF 导入**
-   - **参考论文/项目**：**GraphRAG-Bench Official Evaluation**（四维语义评测）、**IndustryAssetEQA**（ACL 2026，OREDA `FMEA_KG.ttl` 工业知识图谱）。
-   - **核心目标**：引入 Answer Accuracy / Faithfulness / Coverage / Refusal Rate 消除纯 `Token-F1` 拒答失真；用语义谓词三元组替代无类型共现边；打通标准工业 RDF/Turtle 一键导入与 SHACL-lite 质检。
-3. **Stage 3.4：HyperGraph 多条件超边 + 验证后自演化记忆写回**
-   - **参考论文/项目**：**HyperGraphRAG**（NeurIPS 2025，超图建模 N 元联合关系）、**A-MEM**（NeurIPS 2025，Agentic Memory 自组织演化记忆）。
-   - **核心目标**：支持 `{症状A, 症状B, 症状C} ==[JOINT_INDICATES]==> 根因` 的原生超边表示，并仅允许通过 `GroundingAudit (100%)` 与一致性检验的高置信结论带时间戳写回经验图谱，防止知识投毒。
+### Stage 3.4：HyperGraph 多条件超边 + 4 重防投毒自演化记忆写回（A-MEM）+ 工作台联动（Stage 3 收官完成）
+- **升级前痛点（Why）**：
+  - 传统二元三元组（`A -> B`）无法原生表达工业与医疗中最核心的 **N 元联合条件诊断**（例如单凭“2倍频振动升高”无法唯一确定根因，只有当 `{2倍频振动升高 + 滚动轴承 + 弹性联轴器}` 联合出现时才高置信指向 `轴系不对中`）。
+  - 经过完整 ToT/CoT 推理和 `GroundingAudit` 验证的高质量排障结论在查询结束后即被丢弃，无法沉淀为可审计、防投毒的长期情景记忆供后续查询复用。
+- **参考论文与范式（Paper & Paradigm）**：
+  - **HyperGraphRAG**（NeurIPS 2025）：以超边（HyperEdge）原生建模 N 元联合知识关系，在本项目中采用与标准二元图完全兼容的 `HyperEdge` 模型与二分图映射，确保向 Neo4j `HyperNode` 无痛迁移。
+  - **A-MEM** (*Agentic Memory for LLM Agents*, NeurIPS 2025) & **IndustryAssetEQA**（`episodic_store.py` / `nli_checks.py`）：设计**“四重防投毒写回门禁”**——严禁将未经核验的 LLM 输出直接写回知识库，必须依次通过 `GATE_1_GROUNDING`（100% Grounding + 零编造引用 + 可反查切片）、`GATE_2_SUBSTANCE/CONFIDENCE`（非拒答 + 置信度达标）、`GATE_3_CONFLICT_NLI`（极性矛盾与同条件互斥目标冲突拦截）与 `GATE_4_AUDIT_PERSIST`（带 UTC 时间戳 `valid_from` 与 `provenance_run_id` 持久化，并自动晋升为 `VERIFIED_JOINT_DIAGNOSIS` 超边）。
+- **本项目源码落点（Code Map）**：
+  - 核心数据模型与配置：`src/llm_graphrag_kg/core/schema.py`（`HyperEdge`、`VerifiedMemoryRecord`）、`config.py`（`MemoryConfig`）、`providers/storage/networkx_store.py`（`graph.json` 向后兼容持久化）
+  - 超边挖掘与联合匹配：`src/llm_graphrag_kg/pipelines/hypergraph.py`（`mine_joint_hyperedges` / `match_hyperedges` / `format_hyperedge_context`）
+  - 4 重防投毒自演化记忆：`src/llm_graphrag_kg/pipelines/memory_store.py`（`VerifiedMemoryStore` / `check_memory_conflict` / `WriteBackGateDecision`）
+  - 全链路与 7 标签页工作台：`pipelines/retriever.py`、`pipelines/workflow.py`、`cli.py`（`mine-hyperedges`、`memory-list`、`query --writeback`）、`viz/app.py`（新增 Tab 7「🧬 超边与自演化记忆」）、`tests/test_stage3_4_hypergraph_memory.py`
+- **升级优势（Evidence）**：
+  - **多条件超边自动挖掘与精准匹配**：工业故障诊断图谱自动挖掘 `6` 条 N 元联合超边（如 `{2倍频振动升高 + 滚动轴承 + 弹性联轴器} ===[JOINT_INDICATES]===> 轴系不对中`，`conf=0.98`）；IBM FailureSensorIQ 自动挖掘 `64` 条多传感器联合故障超边（如 5 信号联合指向 `steam turbine :: damaged labyrinth seals`，`conf=0.98`）；单症状不误触发，多症状精准命中。
+  - **100% 防投毒闭环实证**：单元测试覆盖 4 重门禁全部拦截路径（未扎根、拒答、低置信度、极性反转矛盾、同条件互斥根因）；真机 `qwen3.5:9b` 运行 `tot_dfs --writeback` 成功通过门禁写回 `mem_063584d27c0b` 并自动晋升超边，二次查询自动触发 `HyperGraph Matches (4 hits)` + `Recalled A-MEM (mem_063584d27c0b)` 且达到 4/4 步 **`100.0%` Grounding**。
+  - **7 标签页工作台无异常渲染**：Streamlit 无头 `AppTest` 全部 7 个标签页 0 异常，全仓 `pytest` **45/45** 通过。
+- **学习要点（Takeaway）**：
+  - 自演化 RAG 的生命线不是“写回越多越好”，而是**“把未扎根与逻辑冲突 100% 挡在门外”**；结合 N 元超边与带时间戳的审计账本，系统才能在持续运行中越用越准而不发生知识腐化。
+
+---
+
+## 4. 面向企业级技术栈重构的演进迁移地图（Prototype → Production）
+
+> 至 Stage 3.4 为止，研究原型阶段（Stage 1 → 3.4）已全部闭环。由于本项目自第一天起即采用 **Ports & Adapters（`Protocol` 解耦）** 架构，下一步向企业级生产技术栈重构时，**核心推理引擎（`reasoning/`）、驾驭层（`harness/`）与评测体系（`eval/`）几乎无需重写**，只需按接口逐层替换底层适配器：
+
+| 当前原型模块（零外部依赖） | 核心抽象协议 / 数据契约 | 推荐企业级生产技术栈替换方案 | 迁移注意点 |
+|---|---|---|---|
+| `NetworkXGraphStore` (`graph.json`) | `BaseGraphStore` + `Entity` / `Relation` / `HyperEdge` | **Neo4j / NebulaGraph / Memgraph**（HyperEdge 映射为 `:HyperEdge` 中介节点 + `:CONDITION` / `:TARGET` 边） | 用 Cypher 索引替换内存邻接表；PPR 可直调 Neo4j GDS `gds.pageRank` |
+| `LocalVectorStore` (`.npy` + Okapi BM25) | `BaseVectorStore` + `TextChunk` | **Qdrant / Milvus / Elasticsearch / pgvector+BM25**（原生 Hybrid Dense+Sparse RRF） | 保留 `chunk_id` 与 `source` 字符偏移指针，确保 `GroundingAudit` 零改动 |
+| `VerifiedMemoryStore` (`verified_memories.jsonl`) | `VerifiedMemoryRecord` + `WriteBackGateDecision` | **PostgreSQL（审计表 + JSONB + pgvector）** 或 **Redis + Postgres** | 保留 `valid_from` / `status` / `provenance_run_id` 实现时间旅行与人工审批回滚 |
+| `OllamaNativeClient` / `OpenAICompatClient` | `BaseLLMClient` / `BaseEmbeddingClient` | **vLLM / SGLang / LiteLLM Gateway**（支持 `4b` 中间层 + `9b/72b` 综合层异构并发零换模） | 生产多卡/云网关彻底消除 8 GB 单卡换模税，直接兑现 `4b` 中间层 `15%–24%` 净加速 |
+| `cli.py` + `viz/app.py` (Streamlit) | `GraphRAGPipeline` + `QueryResult` | **FastAPI / LangServe 异步微服务 + Celery/Temporal（OpenIE 离线任务）+ React/Vue 前端** | 复用 `tot_tree_exporter.py` 的 JSON Schema 直接驱动前端 DAG/Tree 交互组件 |
+| `LLMHarness` + `eval/llm_judge.py` | `TraceLedger` + `JudgeReport` | **OpenTelemetry + Langfuse / Arize Phoenix + CI 回归门禁** | 将 `judge-grb` 与 `shacl-check` 接入企业 CI/CD 作为发版质量红线 |
 
 ---
 

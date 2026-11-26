@@ -25,6 +25,7 @@ import pandas as pd
 import streamlit as st
 
 from llm_graphrag_kg.config import AppConfig, load_config
+from llm_graphrag_kg.pipelines.hypergraph import mine_joint_hyperedges
 from llm_graphrag_kg.pipelines.workflow import GraphRAGPipeline
 from llm_graphrag_kg.providers.factory import create_llm_client
 from llm_graphrag_kg.viz.audit_report import compute_audit_stats, export_audit_artifacts
@@ -646,6 +647,11 @@ def _render_query_tab(pipeline: GraphRAGPipeline, cfg: AppConfig, cfg_rel: str) 
         ),
     )
     enable_compact = c3.checkbox("启用 Compact", value=cfg.harness.enable_compact)
+    enable_writeback = c3.checkbox(
+        "验证后记忆写回 (A-MEM)",
+        value=cfg.memory.enable_verified_writeback,
+        help="仅当 Grounding=100% 且通过冲突检验时写回 verified_memories.jsonl。",
+    )
     k_hops = c4.slider("子图跳数", min_value=1, max_value=3, value=cfg.retrieval.k_hops)
     top_k_entities = c5.slider("种子上限", min_value=2, max_value=15, value=cfg.retrieval.top_k_entities)
 
@@ -661,6 +667,7 @@ def _render_query_tab(pipeline: GraphRAGPipeline, cfg: AppConfig, cfg_rel: str) 
                     mode=mode,
                     reasoning=reasoning,
                     enable_compact=enable_compact,
+                    enable_writeback=enable_writeback,
                     auto_load=False,
                 )
                 st.session_state["last_query_result"] = result
@@ -677,6 +684,24 @@ def _render_query_tab(pipeline: GraphRAGPipeline, cfg: AppConfig, cfg_rel: str) 
 
     st.markdown("### 💬 最终回答")
     st.success(result.answer)
+
+    matched_he = result.metadata.get("matched_hyperedges")
+    if isinstance(matched_he, list) and matched_he:
+        he_lines = "；".join(
+            f"`{' + '.join(m.get('matched_condition_names', []))}` ⇒ **{m.get('target_entity_name')}** "
+            f"({float(m.get('coverage_ratio', 0.0)) * 100:.0f}%)"
+            for m in matched_he[:3]
+        )
+        st.info(f"🧬 **HyperGraph 多条件超边命中 ({len(matched_he)})**：{he_lines}")
+
+    wb_dec = result.metadata.get("writeback_decision")
+    if isinstance(wb_dec, dict):
+        if wb_dec.get("accepted"):
+            st.success(f"🧠 **A-MEM 验证写回已放行**：{wb_dec.get('reason', '')}")
+        else:
+            st.warning(
+                f"🛡️ **A-MEM 防投毒门禁拦截 (`{wb_dec.get('gate_failed')}`)**：{wb_dec.get('reason', '')}"
+            )
 
     # Compact & Harness Telemetry Bar
     comp = result.metadata.get("compaction")
@@ -898,6 +923,77 @@ def _render_chunks_tab(chunk_records: list[dict[str, Any]]) -> None:
             st.write(row["text"])
 
 
+def _render_hypergraph_memory_tab(pipeline: GraphRAGPipeline, cfg: AppConfig, storage_dir: Path) -> None:
+    """Stage 3.4 HyperGraph N-ary multi-condition hyperedges & A-MEM verified memory ledger."""
+    st.subheader("🧬 Stage 3.4：HyperGraph 多条件超边 & 验证后自演化记忆（A-MEM）")
+    col_a, col_b = st.columns([3, 1])
+    with col_a:
+        st.caption(
+            "支持 `{症状A + 症状B + 症状C} ===[JOINT_INDICATES]===> 根因` 的 N 元联合超边，"
+            "以及经 4 重防投毒门禁（100% Grounding + 置信度 + 非拒答 + NLI 冲突拦截）审核的经验记忆库。"
+        )
+    with col_b:
+        if st.button("⚡ 挖掘/刷新当前图谱多条件超边", key="mine_he_btn"):
+            mined = mine_joint_hyperedges(
+                pipeline.graph_store,
+                min_conditions=cfg.memory.hyperedge_min_conditions,
+            )
+            pipeline.graph_store.save(storage_dir)
+            st.success(f"已挖掘并持久化 {len(mined)} 条多条件超边至 graph.json！")
+
+    hyperedges = (
+        pipeline.graph_store.get_all_hyperedges()
+        if hasattr(pipeline.graph_store, "get_all_hyperedges")
+        else []
+    )
+    ent_map = {e.entity_id: e.name for e in pipeline.graph_store.get_all_entities()}
+
+    st.markdown(f"#### 🔗 多条件超边列表（共 `{len(hyperedges)}` 条）")
+    if hyperedges:
+        he_rows = [
+            {
+                "超边 ID": h.hyperedge_id,
+                "联合条件集合 (N-ary Conditions)": " + ".join(
+                    ent_map.get(cid, cid) for cid in h.condition_entity_ids
+                ),
+                "关系谓词": h.relation_type,
+                "指向目标": ent_map.get(h.target_entity_id, h.target_entity_id),
+                "置信度": round(h.confidence, 2),
+                "溯源切片": ", ".join(h.source_chunk_ids[:3]),
+                "来源": h.metadata.get("from_verified_memory") or h.metadata.get("mined_by", "manual"),
+            }
+            for h in hyperedges
+        ]
+        st.dataframe(pd.DataFrame(he_rows), width="stretch", hide_index=True)
+    else:
+        st.info("当前图谱暂无超边。点击右上角「⚡ 挖掘/刷新当前图谱多条件超边」即可自动挖掘共源多条件规则。")
+
+    st.divider()
+    memories = pipeline.memory_store.get_all()
+    st.markdown(f"#### 🧠 已验证自演化经验记忆账本（A-MEM，共 `{len(memories)}` 条）")
+    if memories:
+        mem_rows = [
+            {
+                "记忆 ID": m.memory_id,
+                "生效时间 (UTC)": m.valid_from,
+                "推理范式": m.reasoning_paradigm,
+                "Grounding": f"{m.grounding_score * 100:.0f}%",
+                "置信度": round(m.confidence, 2),
+                "冲突校验": "PASS" if m.conflict_checked else "SKIP",
+                "问题": m.question[:80],
+                "已验证结论": m.conclusion[:180],
+                "溯源切片": ", ".join(m.source_chunk_ids[:3]),
+            }
+            for m in reversed(memories)
+        ]
+        st.dataframe(pd.DataFrame(mem_rows), width="stretch", hide_index=True)
+    else:
+        st.caption(
+            "暂无写回记录。在「🔍 问答与思维回放」页勾选「验证后记忆写回 (A-MEM)」并运行查询，"
+            "仅通过 100% Grounding 与无冲突检验的结论会被安全持久化至 `verified_memories.jsonl`。"
+        )
+
+
 def main() -> None:
     _init_page()
     cfg, _input_dir, storage_dir, selected_cfg_rel = _render_sidebar()
@@ -918,7 +1014,7 @@ def main() -> None:
     community_records = build_community_records(pipeline.graph_store)
     chunk_records = build_chunk_records(pipeline.vector_store)
 
-    tab_graph, tab_query, tab_shacl, tab_kg, tab_comm, tab_chunks = st.tabs(
+    tab_graph, tab_query, tab_shacl, tab_kg, tab_comm, tab_chunks, tab_hg_mem = st.tabs(
         [
             "📊 交互图谱 & Ego-Graph",
             "🔍 问答与思维回放",
@@ -926,6 +1022,7 @@ def main() -> None:
             "🧩 实体与三元组溯源",
             "🗂️ 社区聚类",
             "📄 原文切片",
+            "🧬 超边与自演化记忆",
         ]
     )
 
@@ -941,6 +1038,8 @@ def main() -> None:
         _render_communities_tab(community_records)
     with tab_chunks:
         _render_chunks_tab(chunk_records)
+    with tab_hg_mem:
+        _render_hypergraph_memory_tab(pipeline, cfg, storage_dir)
 
 
 if __name__ == "__main__":

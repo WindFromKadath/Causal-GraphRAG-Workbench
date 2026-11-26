@@ -9,7 +9,7 @@ from pathlib import Path
 
 import networkx as nx
 
-from llm_graphrag_kg.core.schema import Community, Entity, Relation
+from llm_graphrag_kg.core.schema import Community, Entity, HyperEdge, Relation
 
 
 def normalize_key(text: str) -> str:
@@ -28,6 +28,7 @@ class NetworkXGraphStore:
         self._entities: dict[str, Entity] = {}
         self._relations: dict[str, Relation] = {}
         self._communities: dict[int, Community] = {}
+        self._hyperedges: dict[str, HyperEdge] = {}
 
     def upsert_entity(self, entity: Entity) -> Entity:
         existing = self._entities.get(entity.entity_id)
@@ -136,6 +137,35 @@ class NetworkXGraphStore:
     def get_all_relations(self) -> list[Relation]:
         return list(self._relations.values())
 
+    def upsert_hyperedge(self, hyperedge: HyperEdge) -> HyperEdge:
+        """Insert or merge a multi-condition N-ary HyperEdge (Stage 3.4)."""
+        existing = self._hyperedges.get(hyperedge.hyperedge_id)
+        if existing is None:
+            self._hyperedges[hyperedge.hyperedge_id] = hyperedge.model_copy(deep=True)
+            return self._hyperedges[hyperedge.hyperedge_id]
+
+        merged_conds = list(
+            dict.fromkeys([*existing.condition_entity_ids, *hyperedge.condition_entity_ids])
+        )
+        merged_chunks = list(
+            dict.fromkeys([*existing.source_chunk_ids, *hyperedge.source_chunk_ids])
+        )
+        updated = existing.model_copy(
+            update={
+                "condition_entity_ids": merged_conds,
+                "weight": existing.weight + hyperedge.weight,
+                "confidence": max(existing.confidence, hyperedge.confidence),
+                "source_chunk_ids": merged_chunks,
+                "description": hyperedge.description or existing.description,
+                "metadata": {**existing.metadata, **hyperedge.metadata},
+            }
+        )
+        self._hyperedges[hyperedge.hyperedge_id] = updated
+        return updated
+
+    def get_all_hyperedges(self) -> list[HyperEdge]:
+        return list(self._hyperedges.values())
+
     def get_k_hop_subgraph(
         self, seed_entity_ids: list[str], k_hops: int = 1
     ) -> tuple[list[Entity], list[Relation]]:
@@ -212,6 +242,7 @@ class NetworkXGraphStore:
             "entities": [e.model_dump() for e in self._entities.values()],
             "relations": [r.model_dump() for r in self._relations.values()],
             "communities": [c.model_dump() for c in self.get_all_communities()],
+            "hyperedges": [h.model_dump() for h in self._hyperedges.values()],
         }
         (directory / "graph.json").write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -232,4 +263,7 @@ class NetworkXGraphStore:
         }
         self._communities = {
             item["community_id"]: Community(**item) for item in payload.get("communities", [])
+        }
+        self._hyperedges = {
+            item["hyperedge_id"]: HyperEdge(**item) for item in payload.get("hyperedges", [])
         }
