@@ -6,6 +6,15 @@
 
 ---
 
+## [2026-11-26] Docs: Bilingual README Overhaul - 对齐工程与科研项目模板重构英文主入口 `README.md` 与中文同步版 `README.zh-CN.md`
+- **提交类型**：`docs`
+- **变更背景**：原 `README.md` 仍以早期 Stage 1–3 中文流水账方式组织，缺少清晰的系统全景架构、接口/性能/故障契约表、离线与企业全栈双路径快速开始、已核查评测与边界局限声明以及 GitHub 英文主入口规范。参考工程+科研混合项目模板进行精炼重构，保持内容严谨清晰、无多余展示附件。
+- **主要修改**：
+  - 重构 `README.md` 为 GitHub 规范的 English 主入口，并新增完全事实同步的 `README.zh-CN.md`（顶部互链 `[English](README.md) | [简体中文](README.zh-CN.md)`），结构覆盖：Overview & Operating Scope、Mermaid 系统全景架构图、Interfaces & Guarantees 契约表、双路径 Quick Start（离线 Mock 与 Docker+FastAPI+React 企业全栈）、Verified Results & Known Limitations、Validation & Repository Structure、Privacy & Third-Party License Attribution。
+- **验证方式**：核验全部相对文档链接均指向仓库真实文件；执行 `scripts/privacy_check.py` 全仓隐私扫描通过，无凭据、无本机绝对路径或占位符残留。
+
+---
+
 ## [2026-11-26] Stage 5 Causal Plan & Full Public Corpus Migration - 确立 Stage 5 因果图谱规划、Neo4j `UNWIND` 批量加速与全部 3 组公开资料直迁 PG16+Neo4j
 - **提交类型**：`feat`
 - **变更背景**：完成 Stage 4 之后的因果图谱认知定型与全量公开数据集迁移：正式将“三层关系隔离、5 种因果间结构（Chain/Fork/Collider-AND/Collider-OR/Intervention）、Pearl 三级证据强度（`L3/L2/L1`）与 4 条 `Causal-SHACL` 硬门禁”立项为 **Stage 5**；同时为 Neo4j 增加 `UNWIND` 批量写入与 `/api/v1/tenants` 自动租户发现接口，将全部 3 组公开资料（OREDA、IBM FailureSensorIQ、GraphRAG-Bench Medical/Novel）完整迁入 PG16 + Neo4j 5.26。

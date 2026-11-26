@@ -1,118 +1,171 @@
 # LLM-GraphRAG-KG
 
-一个面向初学者友好、同时具备平滑迁移能力的 **LLM + GraphRAG + 知识图谱（KG）** 基础 Python 框架，使用 `uv` 进行环境管理，内置**可视化内容核验**与**面向 GitHub 的隐私保护机制**。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## 核心特性
+**LLM-GraphRAG-KG** is a modular, production-ready **LLM + GraphRAG + Knowledge Graph** framework combining research-grade explicit reasoning (`HippoRAG 2 PPR`, `Graph-CoT v2`, `Graph-ToT v2 BFS/DFS`, `HyperGraph`, 4-gate anti-poisoning `A-MEM`, `SHACL-lite`, 4D `LLM-as-a-Judge`) with an enterprise full-stack architecture (**PostgreSQL 16 + pgvector 0.8**, **Neo4j 5.26**, **Redis 7 Streams**, **Thin LangGraph + HITL**, **FastAPI REST/SSE**, and a **React 19 + TypeScript Console**).
 
-- **分层解耦架构（Migration-Ready）**：核心管线仅依赖 `Protocol` 抽象接口，默认零外部数据库依赖（`NetworkX` + 本地向量存储），后续可平滑替换至 Neo4j / 专用向量库。
-- **多模型兼容**：统一采用 OpenAI-compatible 协议与 Ollama 原生控制接口，通过 `.env` 一键切换云端大模型 API、本机 Ollama / vLLM / LM Studio 等本地模型服务，亦内置离线 `mock` 模式用于零成本调试与自动化测试。
-- **可视化内容核验**：
-  - Phase 1：自动生成图谱质量审计报告（Markdown/CSV）、标准 `.graphml`（兼容 Gephi/Cytoscape）、`PyVis` 单文件交互式 HTML 图谱（支持悬停原文溯源与**问答检索子图高亮**），以及**零 CDN 离线交互式 Node→Edge→Node 逐跳回放与思维树因果解析页**（`--export-tot-html`）。
-  - Phase 2：基于 `Streamlit` 的一站式本地可视化核验工作台（内置工业故障诊断、IBM FailureSensorIQ、GraphRAG-Bench Medical & Novel 多数据集无缝切换与嵌入维度自动对齐，同屏查看文档切片、SHACL-lite 合规审计、实时提问与思维链/思维树回放）。
-- **显性推理与自适应路由（Stage 2.2 → 3.2+）**：
-  - 支持 `direct`、`cot`（单轮结构化）、`cot_iter`（论文完整版多轮 KG 工具循环 Graph-CoT v2）、`tot`（Depth-1 互斥剪枝）、`multi_branch`（非剪枝多分支并集聚合）、`auto`（零开销自适应三路路由 + 动态早停），以及 `tot_bfs` / `tot_dfs`（论文完整版多深度图边搜索 + DFS 真实回溯），并支持 `--fast-model` 双模型分层调度。
-- **隐私与项目管理规范**：
-  - 严格隔离代码、配置、脱敏示例数据（`data/sample/`）与私有运行数据（`data/private/`、`storage/`、`outputs/`）。
-  - 每次 Git 提交前自动执行隐私与修改日志（`CHANGELOG.md`）检查。
+---
 
-## 目录结构
+## Overview and Operating Scope
 
-```text
-LLM-GraphRAG-KG/
-├── .env.example                 # 环境变量模板（复制为 .env 后填入实际配置）
-├── CHANGELOG.md                 # 修改日志（每次 Git 提交同步更新）
-├── configs/
-│   ├── default.yaml                 # 通用默认运行参数
-│   ├── fault_diagnosis.yaml         # 工业工程部署与故障诊断领域本体配置
-│   ├── failuresensoriq.yaml         # IBM FailureSensorIQ（Apache-2.0）标准数据集配置
-│   ├── fmea_kg_rdf.yaml             # 工业 OREDA FMEA RDF/Turtle 知识图谱配置（Stage 3.3）
-│   ├── graphrag_bench_medical.yaml  # GraphRAG-Bench Medical 医学多跳数据集（Stage 3.1 稠密+HippoRAG 2）
-│   └── graphrag_bench_novel.yaml    # GraphRAG-Bench Novel 长篇叙事数据集（Stage 3.1 稠密+HippoRAG 2）
-├── data/
-│   ├── sample/                  # 轻量基础演示语料（3 篇）
-│   └── sample_fault_diagnosis/  # 工程部署与工业故障诊断脱敏语料（6 篇，含多跳因果链）
-├── docs/
-│   ├── evolution_and_papers_guide.md        # ★ 架构演进总览与论文范式学习手册（Stage 1 → 4.5，持续更新）
-│   ├── engineering_deployment.md            # 工程部署、离线迁移与存储演进指南
-│   ├── troubleshooting_diagnosis.md         # 系统故障诊断与排障手册（FD-01 ~ FD-08）
-│   ├── stage2_harness_reasoning_plan.md        # 第二阶段规划：LLM Harness + Compact + 显性 CoT/ToT
-│   ├── benchmark_stage2_1_audit_and_roadmap.md # Stage 2.1 全量四基线评测、差异法证与前沿对标
-│   ├── benchmark_stage2_hard_datasets.md       # 第二阶段收尾：GraphRAG-Bench 双域高难评测与边界总结
-│   ├── benchmark_stage3_base_model.md          # Stage 3.0 基础模型基准：本地 Ollama 多上下文吞吐与显存选型
-│   ├── stage3_nextgen_graphrag_plan.md         # 第三阶段规划（已完成）：稠密混合检索、路由、Judge、超边与A-MEM
-│   ├── stage4_enterprise_refactor_plan.md      # ★ 第四阶段规划（已完成）：PG+pgvector、Neo4j、LangGraph、FastAPI与React重构
-│   └── stage5_causal_graphrag_plan.md          # ★ 第五阶段规划（待推进）：因果图谱抽分、5种因果间结构与Causal-SHACL门禁
-├── deploy/postgres/init.sql     # PostgreSQL 16 + pgvector 0.8 初始化 DDL
-├── docker-compose.yml           # PG16 (25432) + Neo4j 5.26 (27474/27687) + Redis 7 (26379)
-├── frontend/                    # ★ Stage 4.5 React 19 + TS + Vite + Tailwind v4 + Cytoscape.js + ECharts 控制台
-├── scripts/                     # 隐私与提交规范检查工具
-├── src/llm_graphrag_kg/         # 核心框架源码
-└── tests/                       # 自动化测试套件
+- **Audience & Use Cases**: AI/RAG engineers, researchers, and industrial diagnostics teams building auditable multi-hop retrieval, root-cause analysis, and governed knowledge bases—ranging from zero-dependency local prototyping to multi-tenant Docker deployments.
+- **Documented Status**:
+  - **Stage 1.0 → 3.4 (Completed)**: Core GraphRAG pipeline, L0/L1/L2 compaction, HippoRAG 2 PPR + RRF, adaptive routing, paper-faithful Graph-CoT v2 & Graph-ToT v2 (BFS/DFS), 4D LLM-as-a-Judge, Semantic OpenIE, OREDA RDF/Turtle importer, N-ary HyperGraph, and 4-gate A-MEM.
+  - **Stage 4.1 → 4.5 (Completed)**: PG16 `halfvec(1024)` HNSW + Iterative Scan, Neo4j 5.26 (`:HyperEdge` + ACL-partitioned `:Community`), Doc Governance (3 Quality Gates + Parent-Child + Redis Streams incremental worker), pure-CPU ONNX/lexical reranking, Thin LangGraph (`PostgresSaver` + Corrective RAG + HITL `interrupt()`), PG/OpenTelemetry tracing, 20 FastAPI REST/SSE endpoints, and a 5-workspace React 19 + TypeScript console.
+  - **Stage 5 (Planned)**: Causal KG direction/inter-causal modeling (Chain / Fork / Collider-AND / Collider-OR / Intervention), Pearl 3-tier causal evidence, and `Causal-SHACL` guards — see [docs/stage5_causal_graphrag_plan.md](docs/stage5_causal_graphrag_plan.md).
+- **Supported Environments**: Python `>=3.12` managed via `uv`, Docker Compose (for enterprise storage), Node.js `>=20` (for frontend builds), local Ollama or any OpenAI-compatible LLM/Embedding endpoint, plus an offline `mock` + `local_hash` mode for CI/testing.
+- **Deployment Scope & Limits**: Verified on local single-node Windows/Linux workstations (including 8 GB VRAM GPUs via `qwen3.5:9b @ 16k` + CPU-first `qwen3-embedding:0.6b`). Multi-node HA clustering, external OAuth2/SSO IdP integration, and automated causal re-extraction of large unstructured corpora are outside the current version scope.
+
+---
+
+## System Architecture
+
+```mermaid
+flowchart TB
+    FE["React 19 + TypeScript Console (5 Workspaces)<br/>SSE Chat/HITL · Doc Governance · Cytoscape Neo4j/HyperEdge · ECharts Eval v2 · Trace Waterfall"]
+    API["FastAPI Gateway (20 REST + SSE Endpoints)<br/>X-API-Key (401) · Tenant/RBAC Pre-Filter (403) · SPA Hosting"]
+    LG["Thin LangGraph Cyclic State Machine (PostgresSaver)<br/>ACL Guard → Query Rewrite → Rerank → Corrective Loop → Stage 3 Kernel → Grounding Self-Heal → HITL interrupt() → Trace"]
+    CORE["Pure-Python Stage 3 Reasoning Kernel<br/>HippoRAG 2 PPR · Adaptive Router · CoT v2 · ToT BFS/DFS · HyperGraph · 4-Gate A-MEM · SHACL-lite"]
+    WK["Async Governance & Incremental Worker<br/>Docling/PyMuPDF/DOCX · 3 Quality Gates · Parent-Child · SHA-256 Reuse · Active Version Flip · Reconcile"]
+    PG[("PostgreSQL 16 + pgvector 0.8<br/>halfvec(1024) HNSW + Iterative Scan<br/>tsvector · Documents · Parent/Child · A-MEM · Traces")]
+    NEO[("Neo4j 5.26 Community<br/>:Entity · :RELATES_TO · :HyperEdge<br/>ACL-Partitioned :Community")]
+    RDS[("Redis 7<br/>Streams · Consumer Group · DLQ · Rerank Cache")]
+    OLL["Ollama / OpenAI-Compat Models<br/>LLM: qwen3.5:9b (GPU) · Embed: qwen3-embedding:0.6b (CPU-first)"]
+
+    FE <-->|REST / SSE| API
+    API --> LG --> CORE
+    API --> WK
+    LG <--> PG
+    LG <--> NEO
+    LG <--> OLL
+    WK <--> RDS
+    WK <--> PG
+    WK <--> NEO
 ```
 
-## 快速开始（基于 `uv`）
+---
+
+## Interfaces and Guarantees
+
+| Dimension | Contract for Current Version (`Stage 4.5`) |
+|---|---|
+| **CLI (`llm-graphrag-kg`)** | Offline & enterprise commands: `check-llm`, `check-embed`, `check-infra`, `build`, `query`, `agent-query`, `audit`, `shacl-check`, `export-viz`, `migrate-enterprise`, `ingest-enterprise`, `worker-run`, `reconcile`, `dlq-list`, `traces`, `serve`, `ui`, `privacy-check`. |
+| **HTTP / SSE API** | FastAPI v1 (`/api/v1/*`, OpenAPI at `/docs`): 20 endpoints covering health/infra/tenants, document ingestion/multipart upload/rollback/soft-delete, Redis queue/DLQ/reconcile, Neo4j graph/ego/hyperedges/SHACL, LangGraph sync QA, `POST /api/v1/agent/stream` (`text/event-stream`), HITL resume, memories, traces, and Eval v2 metrics. |
+| **Multi-Tenant & ACL** | Tenant (`X-Tenant-Id`) + RBAC (`X-ACL-Roles`) pre-filtering enforced inside PostgreSQL SQL (`tenant_id`, `is_deleted = FALSE`, `acl && $roles`, `JOIN documents` on `active_version`) and Neo4j Cypher (`Entity`, `RELATES_TO`, `HyperEdge`, `acl_partition` `Community`). Verified `0` leaks across all 10 surfaces. |
+| **Verified Performance & VRAM Guardrails** | `qwen3-embedding:0.6b` defaults to Fix A (`num_ctx=2048`, `4.6 GB → 985 MB`) + Fix B (`num_gpu=0` CPU-first, `0 MiB VRAM`, ~55–65 ms/query; optional GPU `num_gpu=99`); PG `halfvec(1024)` HNSW `EXPLAIN ANALYZE` verified `0.163 ms`; CPU reranking 30 candidates `2.96 ms` (`0.69 ms` Redis cache hit). |
+| **Failure & Invalid Input Behavior** | Missing/invalid `X-API-Key` → `401`; non-`admin` privileged calls (rollback/delete/reconcile/HITL resume) → `403`; forged MIME / high-garbled uploads rejected by `FileGate`/`ParseGate` → `422`; stale document versions (`v < active_version`) skipped idempotently; worker exhaustion routed to Redis DLQ; embedding model/dim mismatch blocked by `index_registry`. |
+
+> Guarantees apply only under the stated environments and checks. Offline `pytest` validates logic with mocked drivers/models; Docker integration validates live PG16, Neo4j 5.26, Redis 7, and local Ollama (`qwen3-embedding:0.6b` + `qwen3.5:9b`).
+
+---
+
+## Quick Start
+
+### Path A: Zero-Dependency Local Mode (30 Seconds, No Docker Required)
+
+Requirements: Python `>=3.12` and `uv`.
 
 ```bash
-# 1. 安装核心与开发依赖
+git clone https://github.com/WindFromKadath/LLM-GraphRAG-KG.git
+cd LLM-GraphRAG-KG
 uv sync --extra dev
 
-# 2. 复制环境变量模板（可选：如需连接本地 Ollama/vLLM 或云端 API）
-cp .env.example .env
-
-# 3. 检查本地模型或 API 连通性
-uv run llm-graphrag-kg check-llm
-
-# 4. 使用示例语料构建知识图谱与向量索引（离线演示可加 --provider mock）
+# Build and inspect KG on included sanitized sample corpus (offline mock mode)
 uv run llm-graphrag-kg build --input data/sample --provider mock
-
-# 5. 查看图谱质量审计报告 & 导出 PyVis 交互式 HTML / GraphML
 uv run llm-graphrag-kg audit
 uv run llm-graphrag-kg export-viz
+uv run llm-graphrag-kg query "How does GraphRAG combine a knowledge graph for multi-hop reasoning?" --mode ppr --reasoning auto --provider mock
+```
 
-# 6. 执行 GraphRAG 问答并导出检索子图 / Node→Edge→Node 思维树交互展示页
-uv run llm-graphrag-kg query "电机轴承温度异常升高且伴随2倍频振动升高，有哪些可能原因及排查措施？" --config-file configs/fault_diagnosis.yaml --mode ppr --reasoning tot_dfs --export-tot-html
+- **Sample Input**: `data/sample/` (3 docs) and `data/sample_fault_diagnosis/` (6 industrial diagnostics docs).
+- **Expected Output**: Persisted local store in `storage/`, Markdown/CSV audit & interactive PyVis HTML/GraphML in `outputs/`.
+- **Configuration**: Copy `.env.example` to `.env` to point at local Ollama (`http://127.0.0.1:11434`) or any OpenAI-compatible API. Never commit `.env`.
 
-# 6b. 体验论文完整版迭代 CoT / 多深度 ToT（>=12 GB 显存或云端 API 可加 --fast-model qwen3.5:4b）
-uv run llm-graphrag-kg query "GraphRAG 如何结合知识图谱解决多跳推理问题？" --mode ppr --reasoning auto --provider mock --export-html
+### Path B: Enterprise Full Stack (Docker PG16 + Neo4j 5.26 + Redis 7 + FastAPI + React 19)
 
-# 7. 启动 Phase 2 Streamlit 一站式可视化核验工作台
-uv sync --extra viz --extra dev
-uv run --extra viz llm-graphrag-kg ui
+Requirements: Docker Desktop / Engine, Node.js `>=20`, and local Ollama (`ollama pull qwen3.5:9b` and `ollama pull qwen3-embedding:0.6b`).
 
-# 8. 接入 IBM FailureSensorIQ（Apache-2.0）公开基准集并评测 LLM-only vs Naive RAG vs GraphRAG+KG
-uv run llm-graphrag-kg ingest-fsiq --source data/private/failuresensoriq/failuresensoriq.mapped.jsonl
-uv run llm-graphrag-kg audit --config-file configs/failuresensoriq.yaml
-uv run llm-graphrag-kg export-viz --config-file configs/failuresensoriq.yaml --color-by type
-uv run llm-graphrag-kg eval-fsiq --questions data/private/failuresensoriq/failuresensoriq_standard__all.jsonl --limit 20
-
-# 9. 四级难度极限压测（每集 100 题，含 10选1 / 5选2多选 / 扰动集，支持极简 JSON 提速与断点续跑）
-uv run llm-graphrag-kg stress-fsiq --data-dir data/private/failuresensoriq --limit 100 --no-think --num-ctx 32768
-
-# 10. Stage 3.3：工业 OREDA RDF/Turtle 一键导入 + SHACL-lite 质检，以及官方四维 LLM-as-a-Judge 评测
-uv run llm-graphrag-kg ingest-rdf --ttl data/private/assetopsbench_eqa/IndustryAssetEQA/data/fmea_kg/FMEA_KG.ttl --config-file configs/fmea_kg_rdf.yaml --run-shacl
-uv run llm-graphrag-kg judge-grb --questions data/private/graphrag_bench/Datasets/Questions/medical_questions.json --checkpoint "naive_rag=outputs/graphrag_bench/stage31_medical_qwen35_9b/grb_naive_rag.checkpoint.jsonl" --checkpoint "ppr_auto=outputs/graphrag_bench/stage32_medical_qwen35_9b/grb_ppr_auto.checkpoint.jsonl" --limit 10 --no-think
-
-# 11. Stage 3.4：HyperGraph 多条件超边挖掘 + 4 重防投毒自演化记忆写回（A-MEM）
-uv run llm-graphrag-kg mine-hyperedges --config-file configs/fault_diagnosis.yaml
-uv run llm-graphrag-kg query "离心泵机组同时出现2倍频振动升高、轴承温升异常和电机定子电流波动，根因是什么？" --config-file configs/fault_diagnosis.yaml --mode ppr --reasoning tot_dfs --writeback
-uv run llm-graphrag-kg memory-list --config-file configs/fault_diagnosis.yaml
-
-# 12. Stage 4.1–4.5 企业级生产栈一键启动（Docker PG16+pgvector + Neo4j 5.26 + Redis 7 + FastAPI + React 19 控制台）
+```bash
+# 1. Install enterprise Python extras and start PG16 (25432), Neo4j (27474/27687), Redis (26379)
 uv sync --extra enterprise --extra dev
 docker compose up -d
 uv run llm-graphrag-kg check-infra
+
+# 2. Migrate a local KG into PG16 (halfvec 1024d) + Neo4j 5.26 with SHACL-lite check
 uv run llm-graphrag-kg migrate-enterprise --config-file configs/fault_diagnosis.yaml --tenant fault_diag --acl "public,engineer" --clear-target
-npm --prefix frontend install && npm --prefix frontend run build
+
+# 3. Build the React 19 + TypeScript Console and start FastAPI (serves both UI and OpenAPI)
+npm --prefix frontend install
+npm --prefix frontend run build
 uv run llm-graphrag-kg serve --host 127.0.0.1 --port 8000 --vector-backend pgvector --graph-backend neo4j --checkpointer postgres
-# 浏览器打开 http://127.0.0.1:8000 （生产控制台）或 http://127.0.0.1:8000/docs （OpenAPI）
-# 前端热更新开发模式另开终端执行：npm --prefix frontend run dev （http://127.0.0.1:5173）
 ```
 
-## 隐私与提交流程
+- **Enterprise Console**: `http://127.0.0.1:8000` (5 workspaces: SSE Chat/HITL, Document Governance, Cytoscape Neo4j/HyperEdge Explorer, ECharts Eval Lab v2, Trace Waterfall & A-MEM Audit)
+- **OpenAPI Docs**: `http://127.0.0.1:8000/docs`
+- **Neo4j Browser**: `http://127.0.0.1:27474` (connect to `bolt://127.0.0.1:27687`)
+- **Frontend Hot-Reload Dev Mode** (optional, separate terminal): `npm --prefix frontend run dev` → `http://127.0.0.1:5173`
+- **Legacy Offline Workbench** (optional): `uv sync --extra viz && uv run --extra viz llm-graphrag-kg ui`
 
-- 严禁将 `.env`、`.vscode/`、`data/private/`、`storage/`、`outputs/` 提交至 Git。
-- 每次提交前，请同步更新 [CHANGELOG.md](CHANGELOG.md)，并运行：
+---
+
+## Verified Results, Benchmarks and Limitations
+
+| Benchmark / Verification | Shared Protocol & Environment | Verified Result & Evidence |
+|---|---|---|
+| **GraphRAG-Bench Medical (4D LLM-as-a-Judge)** | 10 stratified Qs (`seed=42`, `qwen3.5:9b` + `nomic-embed-text`) | `naive_rag`: Acc `74.2%`, Faith `32.2%`, Refusal `10.0%`; **`ppr_cot_iter`**: Acc **`82.2%`** (+8.0pp), Faith **`52.3%`** (+20.1pp), Cov **`75.0%`**, Refusal **`0.0%`** ([stage3 plan](docs/stage3_nextgen_graphrag_plan.md)) |
+| **GraphRAG-Bench Novel (4D LLM-as-a-Judge)** | 10 stratified Qs (`seed=42`, `qwen3.5:9b` + `nomic-embed-text`) | `naive_rag`: Acc `73.3%`, Faith `19.0%`; **`ppr_multi_branch`**: Acc **`78.1%`** (+4.8pp), Faith **`33.9%`** (+14.9pp), Cov **`66.8%`** |
+| **`qwen3-embedding:0.6b` vs `nomic-embed-text`** | Hard-negative & bilingual retrieval bench (RTX 5060 8 GB) | Hard-negative acc **`100.0%`** vs `83.3%`; separation margin **`2.87×`** (CN industrial) & **`4.16×`** (CN↔EN); `halfvec(f16)` `0.0%` precision loss; Fix A+B (`num_ctx=2048, num_gpu=0`) eliminates `4.6 GB` KV VRAM swap tax |
+| **OREDA `FMEA_KG.ttl` & IBM `FailureSensorIQ`** | Migrated into Docker PG16 + Neo4j 5.26 (`qwen3-embedding:0.6b`) | `fmea_oreda` (`87` chunks / `87` entities / `1,013` edges) & `failuresensoriq` (`111` chunks / `233` entities / `692` edges / `64` hyperedges): both **`SHACL-lite 100.0% PASS`** |
+| **Enterprise Full-Stack Checks (Stage 4.1–4.5)** | Live Docker PG16 + Neo4j 5.26 + Redis 7 + Ollama (`qwen3.5:9b`) | `EXPLAIN ANALYZE` hits HNSW (`0.163 ms`); 10-surface ACL isolation `0` leaks; SHA-256 unchanged chunks `100%` skip re-embed; `PostgresSaver` HITL `interrupt()/resume` + SSE stream verified at **`100.0%` Grounding** |
+
+### Known Limitations & Negative Findings
+- **External Benchmark Datasets Not Bundled**: Cloning this repository does **not** include third-party datasets (`IBM FailureSensorIQ`, `GraphRAG-Bench`, `OREDA FMEA_KG.ttl`). Users must obtain them from their upstream sources under their respective licenses and place them in `data/private/` (gitignored).
+- **8 GB VRAM Dual-Model Swap Tax**: On single 8 GB GPUs, pairing `qwen3.5:4b` (planner) + `qwen3.5:9b` (synthesizer) incurs `+7–11s/query` Ollama model-swap overhead; single `qwen3.5:9b` is recommended on 8 GB cards, and dual-model tiering (`--fast-model`) is recommended on `>=12 GB` VRAM or cloud APIs.
+- **Unstructured Large-Text Edges (`grb_medical` / `grb_novel`)**: Direct migration preserves existing `CO_OCCURS_WITH` / `SYNONYM_OF` edges from Stage 3.1; structured directional causal extraction (`CAUSES / INDICATES / RULES_OUT`, 3-tier evidence, `Causal-SHACL`) is scheduled for [Stage 5](docs/stage5_causal_graphrag_plan.md).
+
+---
+
+## Validation and Repository Structure
+
+Run the full local verification suite after changes:
 
 ```bash
+uv run ruff check src tests scripts
+uv run pytest -q
 uv run llm-graphrag-kg privacy-check --staged --require-changelog
+npm --prefix frontend run typecheck && npm --prefix frontend run build
 ```
+
+Verified baseline (`a70e56a`): `ruff` 0 errors, `pytest` **63/63 passed**, `tsc --noEmit` 0 errors, `vite build` clean (`2,152` modules), `privacy-check` PASS.
+
+```text
+LLM-GraphRAG-KG/
+├── .env.example                 # Redacted environment template (copy to .env; never commit .env)
+├── CHANGELOG.md                 # Atomic per-commit maintenance & verification log
+├── LICENSE                      # MIT License (code & original docs)
+├── docker-compose.yml           # PG16+pgvector (25432), Neo4j 5.26 (27474/27687), Redis 7 (26379)
+├── deploy/postgres/init.sql     # PostgreSQL 16 + pgvector 0.8 schema & HNSW/GIN DDL
+├── configs/                     # Domain YAML configs (default, fault_diagnosis, failuresensoriq, fmea_kg_rdf, grb_*)
+├── data/                        # Sanitized public sample corpora (data/private/ is gitignored)
+├── docs/                        # Architecture guides, benchmarks, troubleshooting & Stage 2–5 plans
+├── frontend/                    # React 19 + TypeScript + Vite 6 + Tailwind v4 + Cytoscape.js + ECharts Console
+├── scripts/privacy_check.py     # Pre-commit secret, path & CHANGELOG hygiene guard
+├── src/llm_graphrag_kg/         # Core Python package (core, providers, pipelines, reasoning, retrieval, agent, api, eval, observability, viz)
+└── tests/                       # 63 offline unit & FastAPI httpx.AsyncClient integration tests
+```
+
+### Key Documentation Map
+- [docs/evolution_and_papers_guide.md](docs/evolution_and_papers_guide.md) — Stage 1 → 5 architecture evolution & paper study guide (CN)
+- [docs/stage4_enterprise_refactor_plan.md](docs/stage4_enterprise_refactor_plan.md) — Stage 4.1 → 4.5 enterprise architecture, DDL & verified gates (CN)
+- [docs/stage5_causal_graphrag_plan.md](docs/stage5_causal_graphrag_plan.md) — Stage 5 Causal KG modeling, Pearl tiers & `Causal-SHACL` plan (CN)
+- [docs/engineering_deployment.md](docs/engineering_deployment.md) & [docs/troubleshooting_diagnosis.md](docs/troubleshooting_diagnosis.md) — Deployment, offline migration & fault diagnosis handbook (CN)
+- [CHANGELOG.md](CHANGELOG.md) — Complete per-commit change history and verification records (CN)
+
+---
+
+## Privacy, Contributions and License
+
+- **Privacy & Commit Hygiene**: Never commit `.env`, `.vscode/`, `data/private/`, `storage/`, `outputs/`, `frontend/node_modules/`, or `frontend/dist/`. Every commit must update [CHANGELOG.md](CHANGELOG.md) and pass `uv run llm-graphrag-kg privacy-check --staged --require-changelog`.
+- **Issues & Contributions**: Report reproducible issues or proposals via [GitHub Issues](https://github.com/WindFromKadath/LLM-GraphRAG-KG/issues) with sanitized inputs and environment details (no credentials or private paths). Keep both `README.md` and `README.zh-CN.md` synchronized when public interfaces change.
+- **License**: Original source code and documentation are released under the **MIT License** ([LICENSE](LICENSE)).
+- **Third-Party Terms & Acknowledgements**: Upstream datasets, models, and services remain governed by their own licenses (including IBM FailureSensorIQ under Apache-2.0, GraphRAG-Bench, OREDA/IndustryAssetEQA, Qwen3 models, Neo4j Community, PostgreSQL/pgvector, Redis, and LangGraph). Key inspirations include Microsoft GraphRAG & LazyGraphRAG, HippoRAG / HippoRAG 2, Graph-CoT, ToT / ToG-2, HyperGraphRAG, A-MEM, CausalRAG, and W3C SHACL.
