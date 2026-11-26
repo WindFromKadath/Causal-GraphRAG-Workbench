@@ -1778,3 +1778,47 @@ def traces_cmd(
         g_str = f"{t.grounding_score * 100:.0f}%" if t.grounding_score is not None else "-"
         table.add_row(t.request_id, t.tenant_id, t.terminal_status, g_str, f"{t.total_ms:.0f}", t.question[:60])
     console.print(table)
+
+
+@app.command("serve")
+def serve_cmd(
+    host: Annotated[str, typer.Option("--host", help="Bind host address.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="Bind port.")] = 8000,
+    vector_backend: Annotated[str | None, typer.Option("--vector-backend", help="local | pgvector")] = "pgvector",
+    graph_backend: Annotated[str | None, typer.Option("--graph-backend", help="networkx | neo4j")] = "neo4j",
+    checkpointer: Annotated[str, typer.Option("--checkpointer", help="memory | postgres")] = "postgres",
+    tenant: Annotated[str | None, typer.Option("--tenant", help="Default tenant ID.")] = None,
+    acl: Annotated[str | None, typer.Option("--acl", help="Default comma-separated ACL roles.")] = None,
+    config_file: Annotated[Path | None, typer.Option("--config-file", help="Optional YAML config path.")] = None,
+) -> None:
+    """Launch Stage 4.4 FastAPI production service (REST + SSE + OpenAPI)."""
+    import uvicorn  # type: ignore[import-not-found]
+
+    from llm_graphrag_kg.api.app import create_app
+
+    cfg = load_config(config_path=config_file)
+    if vector_backend:
+        cfg.env.vector_backend = vector_backend
+    if graph_backend:
+        cfg.env.graph_backend = graph_backend
+    if tenant:
+        cfg.env.default_tenant_id = tenant
+    if acl:
+        cfg.env.default_acl_roles = acl
+    cfg.env.langgraph_checkpointer = checkpointer
+    if cfg.env.vector_backend == "pgvector" and cfg.env.embedding_provider == "local_hash":
+        cfg.env.embedding_provider = "ollama_native"
+    if cfg.env.llm_think is None:
+        cfg.env.llm_think = False
+
+    api_app = create_app(cfg)
+    console.print(
+        Panel(
+            f"FastAPI Docs: http://{host}:{port}/docs\n"
+            f"Backends: vector={cfg.env.vector_backend} | graph={cfg.env.graph_backend} | "
+            f"checkpointer={cfg.env.langgraph_checkpointer}",
+            title="LLM-GraphRAG-KG Enterprise API (Stage 4.4)",
+            border_style="cyan",
+        )
+    )
+    uvicorn.run(api_app, host=host, port=port, log_level="info")

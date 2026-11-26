@@ -305,7 +305,7 @@ flowchart LR
 | `LocalVectorStore` (`.npy` + Okapi BM25) | `BaseVectorStore` + `TextChunk` | **PostgreSQL 16 + `pgvector 0.8.7`（✅ Stage 4.1 已落地）**（Docker 端口 `25432`） | `halfvec(1024)` HNSW（省 50% 内存，`EXPLAIN` `0.163ms` 命中）+ `hnsw.iterative_scan` + `tsvector`/CJK RRF + `index_registry` 模型指纹强校验 + 业务/ACL/A-MEM 同库 ACID |
 | `nomic-embed-text` + 固定滑窗切分 | `BaseEmbeddingClient` + `DocumentIngestor` | **`qwen3-embedding:0.6b`（✅ Stage 4.1 CPU 主跑）** + **多格式解析（Docling / PyMuPDF / python-docx）+ Parent-Child + 面包屑前缀 + 三道质检（✅ Stage 4.2 已落地）** | Fix A/B 0 显存占用；表格 `<=600 tok` 原子保留、`>600 tok` 续拼表头；Python AST 切分；SHA-256 哈希去重跳过未变块 |
 | 手动线性/分支编排 + 全量 `build` | `GraphRAGPipeline` + `VerifiedMemoryStore` | **Redis Streams / DLQ 异步增量 Worker（✅ Stage 4.2）** + **薄 `LangGraph`（`PostgresSaver` + Corrective RAG + Grounding 自愈 + HITL `interrupt()`）+ 纯 CPU ONNX/词面精排 + PG/OTel Trace + 评测 v2（✅ Stage 4.3 已落地）** | 幂等去重、乱序拦截、双库软删；0 显存 CPU 精排 + Redis 缓存；有环自愈与人工审批持久化；执行失败与质量分母分离 |
-| `cli.py` + 草台 Streamlit | `QueryResult` + `tot_tree_exporter.py` | **FastAPI（Async REST + SSE 流式推送）+ React 19 / TypeScript / Vite / Tailwind / Cytoscape.js / ECharts**（Stage 4.4–4.5） | 5 大企业控制台工作区 + OpenTelemetry/Langfuse Trace + 三态可答性（`FULL/PARTIAL/NONE`）与 `MRR@K` 评测 |
+| `cli.py` + 草台 Streamlit | `QueryResult` + `tot_tree_exporter.py` | **FastAPI（Async REST + SSE 流式推送 + Tenant/ACL 鉴权，✅ Stage 4.4 已落地）+ React 19 / TypeScript / Vite / Tailwind / Cytoscape.js / ECharts（Stage 4.5）** | 20 个生产 OpenAPI 端点与节点级 SSE；Stage 4.5 交付 5 大企业控制台工作区 |
 
 ### Stage 4.1 — 企业级双存储底座（PostgreSQL 16 + pgvector 0.8 + Neo4j 5.26 + Redis 7）
 - **升级动机（Why）**：
@@ -347,6 +347,15 @@ flowchart LR
   - **真机 Docker（PG16 `PostgresSaver` + `request_traces` + Neo4j 5.26 + Redis 7 + Ollama `qwen3-embedding:0.6b` CPU + `qwen3.5:9b` GPU）实测**：
     - 30 候选 CPU 精排 `2.96 ms`（Redis 缓存命中 `0.69 ms`），`0` 显存占用；
     - `fault_diag` 全链路实跑成功在 `hitl_memory_approval` 触发 `interrupt(amem_writeback_approval)` 持久化至 PG，经 `resume_hitl()` 恢复并完成 `100.0%` Grounding 问答，PG `request_traces` 成功入库且 OpenTelemetry 捕获 `8` 条完整节点 Span。
+
+### Stage 4.4 — FastAPI 生产服务层（Async REST + SSE 流式推送 + 租户/ACL 鉴权）
+- **升级动机（Why）**：
+  - 将 Stage 4.1–4.3 的双存储、文档治理、Redis Streams 增量更新、LangGraph 有环推理/HITL 与可观测评测统一封装为解耦的标准 HTTP/SSE 微服务网关，为多租户调用、权限隔离与 Stage 4.5 现代前端提供完整 OpenAPI 契约。
+- **核心工程设计与落点（Code Map）**：
+  - 服务架构：`src/llm_graphrag_kg/api/schemas.py`（Pydantic v2 OpenAPI 契约）、`api/deps.py`（`AppServices` 生命周期容器、`get_auth_context` 常量时间 `X-API-Key` 校验 + `X-Tenant-Id`/`X-ACL-Roles` 提取、`require_admin` RBAC 守卫）与 `api/app.py`（20 个 `/api/v1/*` REST + SSE 端点与 CORS 中间件）；接入 `cli.py`（`serve` 命令）与 `tests/test_stage4_4_fastapi_service.py`。
+- **真机实测证据（Evidence）**：
+  - `ruff` 0 告警，`pytest` **63/63 通过且 0 警告**（`httpx.AsyncClient` 全覆盖 `401/403` 鉴权、伪造 PDF `422`、文档/图谱/Ego-Graph/超边/SHACL、HITL 暂停与恢复、真实 `text/event-stream` SSE 与 Eval v2）。
+  - **真机 Docker FastAPI 联调**：`GET /api/v1/infra/health` 三服务全绿；`GET /api/v1/graph/overview` 返回 `fault_diag` 51 实体/94 关系/7 超边；`GET /api/v1/graph/shacl?profile=fmea_kg_rdf` 达 **`100.0% PASS`**；`POST /api/v1/agent/stream` 实时流式推送完整 7 节点更新与最终 `100.0%` Grounding 回答，并可在 `GET /api/v1/traces` 即时反查。
 
 ---
 

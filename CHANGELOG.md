@@ -6,6 +6,19 @@
 
 ---
 
+## [2026-11-26] Stage 4.4 FastAPI Production Service Layer - 20 个 Async REST/SSE OpenAPI 端点与多租户/RBAC 鉴权网关
+- **提交类型**：`feat`
+- **变更背景**：完成 `docs/stage4_enterprise_refactor_plan.md` 规划的 **Stage 4.4**，将双存储底座、文档治理与 Redis 增量队列、Neo4j 图谱/超边/SHACL、薄 LangGraph 有环推理/HITL 与可观测评测统一封装为生产级 FastAPI 服务层（支持节点级 SSE 实时推送与严格多租户/RBAC 鉴权），为 Stage 4.5 React + TypeScript 现代前端做好完整后端契约准备。
+- **主要修改**：
+  - 新增 `src/llm_graphrag_kg/api/__init__.py`、`schemas.py`、`deps.py` 与 `app.py`：提供生命周期托管容器 `AppServices`、`X-API-Key`（常量时间校验 → `401`）+ `X-Tenant-Id` + `X-ACL-Roles`（`require_admin` → `403`）鉴权中间件、CORS 支持与 20 个 `/api/v1/*` 端点（健康检查、文档列表/文本入库/Multipart 文件上传/版本回滚/同步软删、Redis DLQ/Worker 消费/Reconciliation 对账、图谱总览/Ego-Graph/超边/多 Profile `SHACL-lite`、LangGraph 同步问答、**`POST /api/v1/agent/stream` SSE 实时节点流**、HITL 审批恢复、A-MEM 记忆列表、PG Request Traces 与 Evaluation v2 指标接口）。
+  - 扩展 `pyproject.toml`（新增 `fastapi`、`uvicorn[standard]`、`python-multipart` 及 Ruff FastAPI `extend-immutable-calls` 规范）、`config.py`、`.env.example` 与 `cli.py`（新增 `serve` 命令）；新增 `httpx.AsyncClient` 集成测试 `tests/test_stage4_4_fastapi_service.py`，并同步更新 `docs/stage4_enterprise_refactor_plan.md` 与 `docs/evolution_and_papers_guide.md`。
+- **验证方式**：
+  - 静态与集成测试：`ruff check src tests scripts` 0 告警，`pytest -q` **63/63 全部通过（0 警告）**，`scripts/privacy_check.py` 扫描通过（116 文件）。
+  - 真机 Docker FastAPI 验收：`GET /api/v1/infra/health` 三服务全绿；`fault_diag` 图谱总览返回 `51` 实体 / `94` 关系 / `7` 超边 / `9` 社区；`fmea_oreda` 经 `GET /api/v1/graph/shacl?profile=fmea_kg_rdf` 达 **`100.0% PASS`**；`POST /api/v1/agent/stream` 实时按节点流式推送 `acl_guard → query_rewrite → recall_and_rerank → graph_reason → writeback_gate → commit_memory → record_trace → final` 且达 **`100.0%` Grounding**，PG `request_traces` 可经 `GET /api/v1/traces` 即时反查。
+- **隐私与迁移自检**：`GRAPHRAG_API_AUTH_TOKEN` 仅以占位符写入 `.env.example`，无密钥、本机绝对路径或私有数据入库。
+
+---
+
 ## [2026-11-26] Stage 4.3 Retrieval Funnel, Thin LangGraph Cyclic Orchestration (HITL/PostgresSaver), PG/OTel Tracing & Eval v2
 - **提交类型**：`feat`
 - **变更背景**：完成 `docs/stage4_enterprise_refactor_plan.md` 规划的 **Stage 4.3**：在不侵入 Stage 3 纯 Python 推理核、不引入 `langchain` 旧 Chain 的前提下，构建完整企业级检索漏斗（Multi-Query/Self-Query + 纯 CPU ONNX/词面精排 + Redis 缓存）、薄 `LangGraph` 有环状态机（Corrective RAG 循环 + Grounding 自愈循环 + `PostgresSaver` 持久化 + HITL `interrupt()` 审批）、PG `request_traces` + OpenTelemetry 全链路追踪与 Evaluation v2。

@@ -165,6 +165,12 @@ class EnvSettings(BaseSettings):
     otel_service_name: str = "llm-graphrag-kg"
     otel_exporter_otlp_endpoint: str | None = None
 
+    # Stage 4.4 FastAPI Service Settings
+    api_host: str = "127.0.0.1"
+    api_port: int = 8000
+    api_auth_token: str | None = None  # Optional X-API-Key guard when set
+    api_cors_origins: str = "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:3000"
+
 
 class AppConfig(BaseModel):
     """Unified application configuration with safe redaction helpers."""
