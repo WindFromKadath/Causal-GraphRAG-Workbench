@@ -6,6 +6,21 @@
 
 ---
 
+## [2026-11-26] Stage 4.2 Document Governance & Async Idempotent Incremental Worker - 三道质检、多格式 Parent-Child 父子分块与 Redis Streams 增量更新闭环
+- **提交类型**：`feat`
+- **变更背景**：完成 `docs/stage4_enterprise_refactor_plan.md` 规划的 **Stage 4.2**，彻底取代简单固定滑窗切分与全量重建模式，落地符合企业级生产标准的“多格式版面解析 + 三道质检 + 分格式 Parent-Child + 面包屑前缀”与“Redis Streams + SHA-256 哈希去重 + 乐观租约状态机 + `active_version` 原子切换 + PG/Neo4j 同步软删除 + Reconciliation 对账”完整增量管道。
+- **主要修改**：
+  - 新增 `src/llm_graphrag_kg/pipelines/doc_governance.py`：实现 Tier-1 Docling（可选 `[docling]` 依赖）/ Tier-2 PyMuPDF（多栏阅读排序 + `find_tables()` 表格提取 + 空白页 `missing_pages` 追踪）& `python-docx` / 原生 Markdown+AST 结构化解析；落地 `FileGate`（Magic-Byte/MIME 防伪造）、`ParseGate`（乱码率/空提取/部分可用校验）、`ChunkGate`（碎片过滤与文档内 SHA-256 去重）；实现分格式 Parent-Child 父子分块（`<=600 tok` 表格原子保留、`>600 tok` 自动续拼表头、Python AST 函数/类边界切分）与 `[标题 > 章节 | P.x]` 面包屑注入。
+  - 升级 `src/llm_graphrag_kg/providers/storage/pgvector_store.py` 与 `neo4j_store.py`：PG 全部在线查询强制 `JOIN documents` 校验 `c.version_id = d.active_version AND d.is_deleted = FALSE`（彻底消除双版本污染），新增 `get_parent_chunks` 与 `rollback_document_version`；Neo4j 新增 `soft_delete_document` 同步清理被删文档溯源并软删无剩余溯源的实体/关系/超边。
+  - 新增 `src/llm_graphrag_kg/pipelines/incremental_worker.py`（`DocumentChangeEvent`、`IncrementalIngestionWorker`、`ReconciliationReport`）：实现 Redis Streams 消费组（`XADD`/`XREADGROUP`/`XACK`）+ DLQ 死信流、单调版本号拦截（`stale_version_ignored`）、重复事件幂等跳过（`idempotent_noop`）、未变切片 SHA-256 零重算 Embedding 复用、`pending → processing(claim_token) → ready` 乐观租约与原子切换 `active_version`、Redis 旁路缓存失效及 `reconcile` 对账；更新 `pyproject.toml` 新增 `pymupdf` / `python-docx` 与可选 `[docling]` 依赖组。
+  - 扩展 `src/llm_graphrag_kg/cli.py`（新增 `ingest-enterprise`、`worker-run`、`reconcile`、`dlq-list` 命令）、新增离线单元测试 `tests/test_stage4_2_doc_governance_incremental.py`，并同步更新 `docs/stage4_enterprise_refactor_plan.md` 与 `docs/evolution_and_papers_guide.md`。
+- **验证方式**：
+  - 静态与离线测试：`ruff check src tests scripts` 0 告警，`pytest -q` **58/58** 全部通过，`scripts/privacy_check.py` 扫描通过（105 文件）。
+  - 真机 Docker 验收（PG16 + Neo4j 5.26 + Redis 7 + Ollama `qwen3-embedding:0.6b` CPU）：实测双栏含表 PDF（`partial_available`, `missing_pages=[2]`）与 DOCX 保留表格与结构，伪造 MIME PDF 与高乱码率文档 **100% 拦截**；Redis Streams 实测 `v1` 重复投递 `idempotent_noop`、`v2` 局部修改时未改切片 **100% 跳过重算 Embedding（`reused=2, computed=1`）**、乱序 `v1` 拦截、零双版本污染且原子回滚生效、`reconcile` 回收崩溃租约（`reclaimed=1`）、`delete` 事件同步软删 PG 切片与 Neo4j 实体/关系（双端检索归 `0`）。
+- **隐私与迁移自检**：测试临时 PDF/DOCX 与测试租户数据均即时清理隔离，无密钥、本机绝对路径或私有数据入库。
+
+---
+
 ## [2026-11-26] Stage 4.1 Enterprise Storage Foundation & Embedding Guardrails - PG16+pgvector `halfvec(1024)` + Neo4j 5.26 + Redis 7 双存储底座与 `qwen3-embedding:0.6b` CPU 主跑
 - **提交类型**：`feat`
 - **变更背景**：完成 Stage 4 企业级技术栈重构总规划及第一个完整可验收子阶段 **Stage 4.1**：在保留离线单测 `LocalVectorStore/NetworkXGraphStore` 零依赖替身的前提下，完整落地 Docker Compose 企业基础设施、`qwen3-embedding:0.6b` Fix A (`num_ctx=2048`) + Fix B (`num_gpu=0` CPU 主跑) 双防呆护栏、PostgreSQL 16 + `pgvector 0.8` 混合向量/元数据/A-MEM 存储与 Neo4j 5.26 图谱/超边/ACL 分区社区存储。

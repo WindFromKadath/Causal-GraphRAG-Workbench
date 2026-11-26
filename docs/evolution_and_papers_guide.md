@@ -303,8 +303,8 @@ flowchart LR
 |---|---|---|---|
 | `NetworkXGraphStore` (`graph.json`) | `BaseGraphStore` + `Entity` / `Relation` / `HyperEdge` | **Neo4j 5.26 Community（✅ Stage 4.1 已落地）**（Docker 端口 `27474/27687`，复用本机镜像） | `:HyperEdge` 中介节点 + ACL 预过滤 Cypher + 按 `acl_partition` 分区隔离社区摘要（保留 NetworkX 作单测替身） |
 | `LocalVectorStore` (`.npy` + Okapi BM25) | `BaseVectorStore` + `TextChunk` | **PostgreSQL 16 + `pgvector 0.8.7`（✅ Stage 4.1 已落地）**（Docker 端口 `25432`） | `halfvec(1024)` HNSW（省 50% 内存，`EXPLAIN` `0.163ms` 命中）+ `hnsw.iterative_scan` + `tsvector`/CJK RRF + `index_registry` 模型指纹强校验 + 业务/ACL/A-MEM 同库 ACID |
-| `nomic-embed-text` + 固定滑窗切分 | `BaseEmbeddingClient` + `DocumentIngestor` | **`qwen3-embedding:0.6b`（✅ Stage 4.1 已落地 CPU 主跑 `num_gpu=0, num_ctx=2048`）** + **Docling 版面解析 + Parent-Child + 面包屑前缀 + 三道质检（Stage 4.2）** | Fix A 控 KV 至 `985 MB` + Fix B CPU 主跑 `0 MiB VRAM`，中文工业区分度 `2.87×`、跨语言 `4.16×`、`halfvec(f16)` 零损 |
-| 手动线性/分支编排 + 全量 `build` | `GraphRAGPipeline` + `VerifiedMemoryStore` | **薄 `LangGraph`（`PostgresSaver` + HITL `interrupt()`）** + **Redis Streams / DLQ 异步增量 Worker** + **ONNX CPU `bge-reranker-v2-m3`**（Stage 4.2–4.3） | 在线 Corrective RAG 循环与高风险记忆人工审批；CPU Rerank 0 显存争抢；`active_version` 原子切换 + 软删除 |
+| `nomic-embed-text` + 固定滑窗切分 | `BaseEmbeddingClient` + `DocumentIngestor` | **`qwen3-embedding:0.6b`（✅ Stage 4.1 CPU 主跑）** + **多格式解析（Docling / PyMuPDF / python-docx）+ Parent-Child + 面包屑前缀 + 三道质检（✅ Stage 4.2 已落地）** | Fix A/B 0 显存占用；表格 `<=600 tok` 原子保留、`>600 tok` 续拼表头；Python AST 切分；SHA-256 哈希去重跳过未变块 |
+| 手动线性/分支编排 + 全量 `build` | `GraphRAGPipeline` + `VerifiedMemoryStore` | **Redis Streams / DLQ 异步增量 Worker + `active_version` 原子切换 + Reconciliation 对账（✅ Stage 4.2 已落地）** + **薄 `LangGraph`（`PostgresSaver` + HITL）+ ONNX CPU `bge-reranker-v2-m3`（Stage 4.3）** | 幂等去重、乱序版本拦截、PG+Neo4j 同步软删除、过期租约回收；Stage 4.3 接入 CPU Rerank 与 Corrective RAG |
 | `cli.py` + 草台 Streamlit | `QueryResult` + `tot_tree_exporter.py` | **FastAPI（Async REST + SSE 流式推送）+ React 19 / TypeScript / Vite / Tailwind / Cytoscape.js / ECharts**（Stage 4.4–4.5） | 5 大企业控制台工作区 + OpenTelemetry/Langfuse Trace + 三态可答性（`FULL/PARTIAL/NONE`）与 `MRR@K` 评测 |
 
 ### Stage 4.1 — 企业级双存储底座（PostgreSQL 16 + pgvector 0.8 + Neo4j 5.26 + Redis 7）
@@ -320,6 +320,20 @@ flowchart LR
   - `EXPLAIN (ANALYZE, BUFFERS)` 实证命中 **`Index Scan using idx_child_chunks_hnsw_cosine`**（`0.163 ms`）；`index_registry` 实证拦截 `nomic-embed-text (768d)` 混入 `qwen3-embedding:0.6b (1024d)` 索引。
   - **10 面多租户与 RBAC/ACL 零泄漏测试**：`public` 角色在 PG 稠密/BM25/混合/按 ID 读取/A-MEM 与 Neo4j 实体/查询/k-hop/超边/社区全 10 个接口上 **`0` 越权泄漏**，`admin_only` 全部可见，软删除立即不可见并写入 `audit_logs`。
   - **端到端业务验收**：OREDA `fmea_oreda`（87 实体 / 1,013 关系 / 87 切片）迁入 PG+Neo4j 达 **`SHACL-lite 100.0% PASS`**；`fault_diag` 在 PG16 + Neo4j 5.26 + `qwen3-embedding:0.6b` (CPU) + `qwen3.5:9b` (GPU) 上跑通 `ppr + auto -> tot` 诊断，命中 4 条 Neo4j 超边 + 1 条 PG A-MEM，`GroundingAudit` 达 **`100.0%`**。
+
+### Stage 4.2 — 企业级文档治理层与异步增量幂等更新（Doc Governance + Redis Streams Worker）
+- **升级动机（Why）**：
+  - 真实企业知识库文档包含多栏 PDF、复杂表格、DOCX 与代码，固定滑窗切分会截断表头、撕裂函数、丢失章节上下文；同时全量 `build` 无法应对高频增量更新，直接覆盖还会造成“双版本污染、乱序旧版本覆盖新版本、中途崩溃留僵尸块、删文档漏删图谱节点”等生产故障。
+- **核心工程设计与落点（Code Map）**：
+  - 文档治理与 Parent-Child 分块：`src/llm_graphrag_kg/pipelines/doc_governance.py`（`run_file_gate`、`run_parse_gate`、`run_chunk_gate`、`parse_document_blocks`、`split_markdown_table`、`split_code_block`、`build_parent_child_chunks`、`govern_document`）：Tier-1 Docling / Tier-2 PyMuPDF（多栏排序 + `find_tables()`）& `python-docx` / 原生 Markdown+AST；`<=600 tok` 表格原子保留、`>600 tok` 自动续拼表头；每条子块自动注入 `[标题 > 章节路径 | P.x]` 面包屑与 SHA-256 `content_hash`。
+  - 严格版本隔离与双库软删：`providers/storage/pgvector_store.py`（全部查询 `JOIN documents` 强校验 `c.version_id = d.active_version AND d.is_deleted = FALSE`，新增 `get_parent_chunks` 与 `rollback_document_version`）与 `providers/storage/neo4j_store.py`（新增 `soft_delete_document` 自动剔除删除文档的 `source_chunk_ids` 并软删无有效溯源的实体/关系/超边）。
+  - 异步增量幂等 Worker 与对账：`src/llm_graphrag_kg/pipelines/incremental_worker.py`（`DocumentChangeEvent`、`IncrementalIngestionWorker`、`ReconciliationReport`）：Redis Streams（`XADD`/`XREADGROUP`/`XACK`）+ DLQ 死信流、单调版本号锁（`FOR UPDATE` 拦截乱序旧版本）、SHA-256 哈希复用跳过未变块 Embedding、`pending → processing(claim_token) → ready` 乐观租约状态机、原子切换 `active_version`、旁路缓存失效与 `reconcile` 过期租约回收；接入 `cli.py`（`ingest-enterprise` / `worker-run` / `reconcile` / `dlq-list`）与 `tests/test_stage4_2_doc_governance_incremental.py`。
+- **真机实测证据（Evidence）**：
+  - `ruff` 0 告警，全仓 `pytest` **58/58** 通过（含三道质检、长表续拼表头、Python AST 切分、幂等/复用/乱序/DLQ 离线单测）。
+  - **真机 Docker（PG16 + Neo4j 5.26 + Redis 7 + Ollama `qwen3-embedding:0.6b` CPU）实测**：
+    - 双栏含表 PDF 自动识别空白第 2 页标记 `partial_available (missing_pages=[2])`，DOCX 完整保留表头与章节，伪造 MIME PDF 与高乱码率文本 **100% 拦截**；
+    - Redis Streams 增量闭环：`v1` 重复投递触发 `idempotent_noop`（`0` 重算）；`v2` 仅修改 1 个章节时未改 2 个章节 **100% 跳过重算 Embedding**（`reused=2, computed=1`）；乱序 `v1` 到达被 `stale_version_ignored` 拦截；在线查询 **0 双版本污染** 且一键回滚 `v2→v1→v2` 秒级生效；
+    - 模拟 Worker 崩溃超时租约被 `reconcile` 成功回收（`reclaimed=1`）；`delete` 事件同步软删 PG 切片与 Neo4j 实体/关系，双库检索立即归 `0`。
 
 ---
 

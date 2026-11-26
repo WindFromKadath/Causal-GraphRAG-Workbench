@@ -609,6 +609,75 @@ class Neo4jGraphStore:
                 )
         return graph
 
+    def soft_delete_document(
+        self,
+        doc_id: str,
+        *,
+        chunk_ids: list[str] | None = None,
+        tenant_id: str | None = None,
+    ) -> dict[str, int]:
+        """Synchronously soft-delete Neo4j entities, relations, and hyperedges sourced solely by `doc_id`."""
+        tid = tenant_id or self.default_tenant_id
+        prefix = f"{doc_id}::"
+        cids = list(chunk_ids or [])
+        with self._session() as sess:
+            # 1. Entities whose remaining chunk provenance becomes empty
+            ent_rec = sess.run(
+                """
+                MATCH (e:Entity {tenant_id: $tid})
+                WHERE coalesce(e.is_deleted, false) = false
+                  AND any(c IN coalesce(e.source_chunk_ids, [])
+                          WHERE c IN $cids OR c STARTS WITH $prefix)
+                WITH e, [c IN coalesce(e.source_chunk_ids, [])
+                         WHERE NOT (c IN $cids OR c STARTS WITH $prefix)] AS remaining
+                SET e.source_chunk_ids = remaining,
+                    e.is_deleted = CASE WHEN size(remaining) = 0 THEN true ELSE false END
+                RETURN sum(CASE WHEN size(remaining) = 0 THEN 1 ELSE 0 END) AS deleted_cnt
+                """,
+                tid=tid,
+                cids=cids,
+                prefix=prefix,
+            ).single()
+            # 2. Relations whose remaining chunk provenance becomes empty
+            rel_rec = sess.run(
+                """
+                MATCH (:Entity {tenant_id: $tid})-[r:RELATES_TO {tenant_id: $tid}]->(:Entity {tenant_id: $tid})
+                WHERE coalesce(r.is_deleted, false) = false
+                  AND any(c IN coalesce(r.source_chunk_ids, [])
+                          WHERE c IN $cids OR c STARTS WITH $prefix)
+                WITH r, [c IN coalesce(r.source_chunk_ids, [])
+                         WHERE NOT (c IN $cids OR c STARTS WITH $prefix)] AS remaining
+                SET r.source_chunk_ids = remaining,
+                    r.is_deleted = CASE WHEN size(remaining) = 0 THEN true ELSE false END
+                RETURN sum(CASE WHEN size(remaining) = 0 THEN 1 ELSE 0 END) AS deleted_cnt
+                """,
+                tid=tid,
+                cids=cids,
+                prefix=prefix,
+            ).single()
+            # 3. HyperEdges whose remaining chunk provenance becomes empty
+            he_rec = sess.run(
+                """
+                MATCH (h:HyperEdge {tenant_id: $tid})
+                WHERE coalesce(h.is_deleted, false) = false
+                  AND any(c IN coalesce(h.source_chunk_ids, [])
+                          WHERE c IN $cids OR c STARTS WITH $prefix)
+                WITH h, [c IN coalesce(h.source_chunk_ids, [])
+                         WHERE NOT (c IN $cids OR c STARTS WITH $prefix)] AS remaining
+                SET h.source_chunk_ids = remaining,
+                    h.is_deleted = CASE WHEN size(remaining) = 0 THEN true ELSE false END
+                RETURN sum(CASE WHEN size(remaining) = 0 THEN 1 ELSE 0 END) AS deleted_cnt
+                """,
+                tid=tid,
+                cids=cids,
+                prefix=prefix,
+            ).single()
+            return {
+                "entities_soft_deleted": int(ent_rec["deleted_cnt"]) if ent_rec else 0,
+                "relations_soft_deleted": int(rel_rec["deleted_cnt"]) if rel_rec else 0,
+                "hyperedges_soft_deleted": int(he_rec["deleted_cnt"]) if he_rec else 0,
+            }
+
     def clear_tenant(self, tenant_id: str | None = None) -> None:
         tid = tenant_id or self.default_tenant_id
         with self._session() as sess:

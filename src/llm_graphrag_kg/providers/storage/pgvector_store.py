@@ -451,16 +451,21 @@ class PgVectorStore:
             self._apply_hnsw_session_params(cur)
             cur.execute(
                 f"""
-                SELECT chunk_id, doc_id, source, chunk_index, start_char, end_char,
-                       text, metadata, acl, section_path,
-                       (1.0 - (embedding <=> %s::halfvec({dim})))::float8 AS sim
-                FROM child_chunks
-                WHERE tenant_id = %s
-                  AND is_deleted = FALSE
-                  AND index_status = 'ready'
-                  AND acl && %s::text[]
-                  AND embedding IS NOT NULL
-                ORDER BY embedding <=> %s::halfvec({dim})
+                SELECT c.chunk_id, c.doc_id, c.source, c.chunk_index, c.start_char, c.end_char,
+                       c.text, c.metadata, c.acl, c.section_path,
+                       (1.0 - (c.embedding <=> %s::halfvec({dim})))::float8 AS sim
+                FROM child_chunks c
+                JOIN documents d
+                  ON d.tenant_id = c.tenant_id
+                 AND d.doc_id = c.doc_id
+                 AND d.active_version = c.version_id
+                 AND d.is_deleted = FALSE
+                WHERE c.tenant_id = %s
+                  AND c.is_deleted = FALSE
+                  AND c.index_status = 'ready'
+                  AND c.acl && %s::text[]
+                  AND c.embedding IS NOT NULL
+                ORDER BY c.embedding <=> %s::halfvec({dim})
                 LIMIT %s
                 """,
                 (vec_lit, tid, roles, vec_lit, top_k),
@@ -487,15 +492,20 @@ class PgVectorStore:
             # 1. PostgreSQL native tsvector full-text ranking (fast GIN index)
             cur.execute(
                 """
-                SELECT chunk_id, doc_id, source, chunk_index, start_char, end_char,
-                       text, metadata, acl, section_path,
-                       ts_rank_cd(tsv, plainto_tsquery('simple', %s))::float8 AS rank_score
-                FROM child_chunks
-                WHERE tenant_id = %s
-                  AND is_deleted = FALSE
-                  AND index_status = 'ready'
-                  AND acl && %s::text[]
-                  AND tsv @@ plainto_tsquery('simple', %s)
+                SELECT c.chunk_id, c.doc_id, c.source, c.chunk_index, c.start_char, c.end_char,
+                       c.text, c.metadata, c.acl, c.section_path,
+                       ts_rank_cd(c.tsv, plainto_tsquery('simple', %s))::float8 AS rank_score
+                FROM child_chunks c
+                JOIN documents d
+                  ON d.tenant_id = c.tenant_id
+                 AND d.doc_id = c.doc_id
+                 AND d.active_version = c.version_id
+                 AND d.is_deleted = FALSE
+                WHERE c.tenant_id = %s
+                  AND c.is_deleted = FALSE
+                  AND c.index_status = 'ready'
+                  AND c.acl && %s::text[]
+                  AND c.tsv @@ plainto_tsquery('simple', %s)
                 ORDER BY rank_score DESC
                 LIMIT %s
                 """,
@@ -510,14 +520,19 @@ class PgVectorStore:
             patterns = [f"%{t}%" for t in top_toks]
             cur.execute(
                 """
-                SELECT chunk_id, doc_id, source, chunk_index, start_char, end_char,
-                       text, metadata, acl, section_path
-                FROM child_chunks
-                WHERE tenant_id = %s
-                  AND is_deleted = FALSE
-                  AND index_status = 'ready'
-                  AND acl && %s::text[]
-                  AND text ILIKE ANY(%s::text[])
+                SELECT c.chunk_id, c.doc_id, c.source, c.chunk_index, c.start_char, c.end_char,
+                       c.text, c.metadata, c.acl, c.section_path
+                FROM child_chunks c
+                JOIN documents d
+                  ON d.tenant_id = c.tenant_id
+                 AND d.doc_id = c.doc_id
+                 AND d.active_version = c.version_id
+                 AND d.is_deleted = FALSE
+                WHERE c.tenant_id = %s
+                  AND c.is_deleted = FALSE
+                  AND c.index_status = 'ready'
+                  AND c.acl && %s::text[]
+                  AND c.text ILIKE ANY(%s::text[])
                 LIMIT %s
                 """,
                 (tid, roles, patterns, max(top_k * 3, 20)),
@@ -662,10 +677,19 @@ class PgVectorStore:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT chunk_id, doc_id, source, chunk_index, start_char, end_char,
-                       text, metadata, acl, section_path
-                FROM child_chunks
-                WHERE chunk_id = %s AND tenant_id = %s AND is_deleted = FALSE AND acl && %s::text[]
+                SELECT c.chunk_id, c.doc_id, c.source, c.chunk_index, c.start_char, c.end_char,
+                       c.text, c.metadata, c.acl, c.section_path
+                FROM child_chunks c
+                JOIN documents d
+                  ON d.tenant_id = c.tenant_id
+                 AND d.doc_id = c.doc_id
+                 AND d.active_version = c.version_id
+                 AND d.is_deleted = FALSE
+                WHERE c.chunk_id = %s
+                  AND c.tenant_id = %s
+                  AND c.is_deleted = FALSE
+                  AND c.index_status = 'ready'
+                  AND c.acl && %s::text[]
                 """,
                 (chunk_id, tid, roles),
             )
@@ -683,15 +707,108 @@ class PgVectorStore:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT chunk_id, doc_id, source, chunk_index, start_char, end_char,
-                       text, metadata, acl, section_path
-                FROM child_chunks
-                WHERE tenant_id = %s AND is_deleted = FALSE AND acl && %s::text[]
-                ORDER BY doc_id, chunk_index
+                SELECT c.chunk_id, c.doc_id, c.source, c.chunk_index, c.start_char, c.end_char,
+                       c.text, c.metadata, c.acl, c.section_path
+                FROM child_chunks c
+                JOIN documents d
+                  ON d.tenant_id = c.tenant_id
+                 AND d.doc_id = c.doc_id
+                 AND d.active_version = c.version_id
+                 AND d.is_deleted = FALSE
+                WHERE c.tenant_id = %s
+                  AND c.is_deleted = FALSE
+                  AND c.index_status = 'ready'
+                  AND c.acl && %s::text[]
+                ORDER BY c.doc_id, c.chunk_index
                 """,
                 (tid, roles),
             )
             return [self._row_to_chunk(r) for r in cur.fetchall()]
+
+    def get_parent_chunks(
+        self,
+        parent_ids: list[str],
+        *,
+        tenant_id: str | None = None,
+        acl_roles: list[str] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch Parent reading-grain windows for retrieved child chunks (Parent-Child expansion)."""
+        if not parent_ids:
+            return {}
+        tid = tenant_id or self.default_tenant_id
+        roles = _parse_roles(acl_roles, self.default_acl_roles)
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT p.parent_id, p.doc_id, p.version_id, p.section_path, p.page_no,
+                       p.element_type, p.content, p.token_count, p.metadata
+                FROM parent_chunks p
+                JOIN documents d
+                  ON d.tenant_id = p.tenant_id
+                 AND d.doc_id = p.doc_id
+                 AND d.active_version = p.version_id
+                 AND d.is_deleted = FALSE
+                WHERE p.parent_id = ANY(%s::text[])
+                  AND p.tenant_id = %s
+                  AND p.is_deleted = FALSE
+                  AND p.acl && %s::text[]
+                """,
+                (list(dict.fromkeys(parent_ids)), tid, roles),
+            )
+            out: dict[str, dict[str, Any]] = {}
+            for r in cur.fetchall():
+                out[str(r[0])] = {
+                    "parent_id": str(r[0]),
+                    "doc_id": str(r[1]),
+                    "version_id": int(r[2]),
+                    "section_path": str(r[3]),
+                    "page_no": r[4],
+                    "element_type": str(r[5]),
+                    "content": str(r[6]),
+                    "token_count": int(r[7]),
+                    "metadata": dict(r[8]) if isinstance(r[8], dict) else {},
+                }
+            return out
+
+    def rollback_document_version(
+        self,
+        doc_id: str,
+        target_version: int,
+        *,
+        tenant_id: str | None = None,
+        operator: str = "system",
+    ) -> bool:
+        """Atomically roll back `documents.active_version` to an earlier ready version."""
+        tid = tenant_id or self.default_tenant_id
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM child_chunks
+                WHERE tenant_id = %s AND doc_id = %s AND version_id = %s
+                  AND index_status = 'ready' AND is_deleted = FALSE
+                """,
+                (tid, doc_id, target_version),
+            )
+            ready_cnt = int((cur.fetchone() or (0,))[0])
+            if ready_cnt == 0:
+                return False
+            cur.execute(
+                """
+                UPDATE documents
+                SET active_version = %s, status = 'ready', is_deleted = FALSE, updated_at = NOW()
+                WHERE tenant_id = %s AND doc_id = %s
+                """,
+                (target_version, tid, doc_id),
+            )
+            cur.execute(
+                """
+                INSERT INTO audit_logs (tenant_id, doc_id, change_type, operator, result, payload)
+                VALUES (%s, %s, 'rollback_version', %s, 'success', %s::jsonb)
+                """,
+                (tid, doc_id, operator, json.dumps({"target_version": target_version, "ready_chunks": ready_cnt})),
+            )
+            conn.commit()
+            return True
 
     def save(self, directory: Path) -> None:
         """No-op: PostgreSQL persists transactions directly."""

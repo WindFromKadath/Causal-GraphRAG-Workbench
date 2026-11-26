@@ -7,7 +7,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -29,6 +29,10 @@ from llm_graphrag_kg.adapters.rdf_fmea import ingest_fmea_rdf_ttl
 from llm_graphrag_kg.config import load_config
 from llm_graphrag_kg.eval.llm_judge import judge_grb_checkpoints
 from llm_graphrag_kg.pipelines.hypergraph import mine_joint_hyperedges
+from llm_graphrag_kg.pipelines.incremental_worker import (
+    DocumentChangeEvent,
+    IncrementalIngestionWorker,
+)
 from llm_graphrag_kg.pipelines.migrate_enterprise import (
     check_enterprise_infra,
     migrate_local_storage_to_enterprise,
@@ -1444,5 +1448,204 @@ def memory_list_cmd(
             rec.reasoning_paradigm,
             f"{rec.grounding_score * 100:.0f}% / {rec.confidence:.2f}",
             f"Q: {rec.question[:80]}\nA: {rec.conclusion[:140]}",
+        )
+    console.print(table)
+
+
+def _build_incremental_worker(
+    config_file: Path | None,
+    *,
+    embedder: str | None = "ollama_native",
+    tenant: str | None = None,
+    acl: str | None = None,
+) -> tuple[IncrementalIngestionWorker, Any]:
+    cfg = load_config(
+        config_path=config_file,
+        llm_provider_override="mock",
+        embedding_provider_override=embedder,
+    )
+    cfg.env.vector_backend = "pgvector"
+    cfg.env.graph_backend = "neo4j"
+    if tenant:
+        cfg.env.default_tenant_id = tenant
+    if acl:
+        cfg.env.default_acl_roles = acl
+    from llm_graphrag_kg.providers.factory import create_graph_store, create_vector_store
+
+    pg_store = create_vector_store(cfg)
+    neo_store = create_graph_store(cfg)
+    emb_client = create_embedding_client(cfg)
+    worker = IncrementalIngestionWorker(
+        pg_store=pg_store,  # type: ignore[arg-type]
+        embedder=emb_client,
+        neo4j_store=neo_store,  # type: ignore[arg-type]
+        redis_url=cfg.env.redis_url,
+    )
+    return worker, neo_store
+
+
+@app.command("ingest-enterprise")
+def ingest_enterprise_cmd(
+    source: Annotated[
+        Path, typer.Option("--source", help="Document file path (PDF / DOCX / MD / PY / TXT).")
+    ],
+    doc_id: Annotated[str | None, typer.Option("--doc-id", help="Logical document ID.")] = None,
+    version: Annotated[int, typer.Option("--version", help="Monotonic document version ID.")] = 1,
+    tenant: Annotated[str, typer.Option("--tenant", help="Multi-tenant ID.")] = "default",
+    acl: Annotated[str, typer.Option("--acl", help="Comma-separated ACL roles.")] = "public,internal",
+    op: Annotated[str, typer.Option("--op", help="Operation: upsert | delete")] = "upsert",
+    via_redis: Annotated[
+        bool,
+        typer.Option("--via-redis/--sync", help="Enqueue into Redis Streams and consume via Worker."),
+    ] = True,
+    embedder: Annotated[
+        str | None, typer.Option("--embedder", help="Embedding provider (default: ollama_native).")
+    ] = "ollama_native",
+    config_file: Annotated[Path | None, typer.Option("--config-file", help="Optional YAML config.")] = None,
+) -> None:
+    """Stage 4.2 governed Parent-Child ingestion with 3 quality gates & SHA-256 incremental reuse."""
+    worker, neo_store = _build_incremental_worker(
+        config_file, embedder=embedder, tenant=tenant, acl=acl
+    )
+    roles = [r.strip() for r in acl.split(",") if r.strip()] or ["public"]
+    eff_doc_id = doc_id or f"doc_{source.stem}"
+    event = DocumentChangeEvent(
+        tenant_id=tenant,
+        doc_id=eff_doc_id,
+        version_id=version,
+        op=op,
+        source_uri=str(source),
+        title=source.stem,
+        acl=roles,
+        file_path=str(source.resolve()) if op == "upsert" else None,
+        operator="cli_ingest_enterprise",
+    )
+    try:
+        if via_redis:
+            stream_id = worker.enqueue_event(event)
+            results = worker.consume_batch(max_messages=5, block_ms=500)
+            res = next((r for r in results if r.event_id == event.event_id), None)
+            if res is None:
+                console.print(f"[yellow]Enqueued to Redis Stream ({stream_id}); pending consumption.[/yellow]")
+                return
+        else:
+            res = worker.process_event(event)
+    finally:
+        if hasattr(neo_store, "close"):
+            neo_store.close()
+
+    table = Table(title=f"Stage 4.2 Incremental Governance ({res.doc_id} v{res.version_id})")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Outcome", res.outcome)
+    table.add_row("Tenant", res.tenant_id)
+    table.add_row("Parent Chunks", str(res.parent_chunks))
+    table.add_row("Child Chunks", str(res.child_chunks))
+    table.add_row("Reused Embeddings (SHA-256)", str(res.reused_embeddings))
+    table.add_row("Newly Computed Embeddings", str(res.computed_embeddings))
+    table.add_row("Elapsed", f"{res.elapsed_seconds:.3f}s")
+    table.add_row("Detail", res.detail)
+    console.print(table)
+    if res.outcome in {"rejected_quality_gate", "failed_dlq"}:
+        raise typer.Exit(code=1)
+
+
+@app.command("worker-run")
+def worker_run_cmd(
+    max_messages: Annotated[int, typer.Option("--max-messages", help="Max messages per batch.")] = 20,
+    block_ms: Annotated[int, typer.Option("--block-ms", help="Redis XREADGROUP block timeout (ms).")] = 1000,
+    embedder: Annotated[str | None, typer.Option("--embedder", help="Embedding provider.")] = "ollama_native",
+    config_file: Annotated[Path | None, typer.Option("--config-file", help="Optional YAML config.")] = None,
+) -> None:
+    """Consume pending Stage 4.2 incremental document events from Redis Streams."""
+    worker, neo_store = _build_incremental_worker(config_file, embedder=embedder)
+    try:
+        results = worker.consume_batch(max_messages=max_messages, block_ms=block_ms)
+    finally:
+        if hasattr(neo_store, "close"):
+            neo_store.close()
+    if not results:
+        console.print("[dim]No pending document events in Redis Stream.[/dim]")
+        return
+    table = Table(title=f"Redis Streams Worker Batch ({len(results)} event(s))")
+    table.add_column("Doc ID", style="cyan")
+    table.add_column("Ver", style="white")
+    table.add_column("Op", style="magenta")
+    table.add_column("Outcome", style="green")
+    table.add_column("Reused/New", style="yellow")
+    table.add_column("Detail", style="white")
+    for r in results:
+        table.add_row(
+            r.doc_id,
+            f"v{r.version_id}",
+            r.op,
+            r.outcome,
+            f"{r.reused_embeddings}/{r.computed_embeddings}",
+            r.detail[:90],
+        )
+    console.print(table)
+
+
+@app.command("reconcile")
+def reconcile_cmd(
+    tenant: Annotated[str, typer.Option("--tenant", help="Tenant ID to reconcile.")] = "default",
+    stale_lease_seconds: Annotated[
+        int, typer.Option("--stale-lease-seconds", help="Reclaim processing leases older than N seconds.")
+    ] = 300,
+    purge_superseded: Annotated[
+        bool, typer.Option("--purge-superseded", help="Purge chunks from versions older than active_version.")
+    ] = False,
+    config_file: Annotated[Path | None, typer.Option("--config-file", help="Optional YAML config.")] = None,
+) -> None:
+    """Run Stage 4.2 PG + Neo4j + Redis reconciliation (stale leases, soft-delete sync, old version purge)."""
+    worker, neo_store = _build_incremental_worker(config_file, embedder="local_hash", tenant=tenant)
+    try:
+        rep = worker.reconcile(
+            tenant_id=tenant,
+            stale_lease_seconds=stale_lease_seconds,
+            purge_superseded=purge_superseded,
+        )
+    finally:
+        if hasattr(neo_store, "close"):
+            neo_store.close()
+    table = Table(title=f"Stage 4.2 Reconciliation Report ({rep.tenant_id})")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Count", style="green")
+    table.add_row("Reclaimed Stale Leases", str(rep.reclaimed_stale_leases))
+    table.add_row("Repaired Deleted PG Chunks", str(rep.repaired_deleted_chunks))
+    table.add_row("Repaired Deleted Neo4j Nodes", str(rep.repaired_deleted_neo4j_nodes))
+    table.add_row("Purged Superseded Chunks", str(rep.purged_superseded_chunks))
+    table.add_row("Active Documents", str(rep.active_documents))
+    table.add_row("Redis DLQ Length", str(rep.dlq_length))
+    console.print(table)
+
+
+@app.command("dlq-list")
+def dlq_list_cmd(
+    limit: Annotated[int, typer.Option("--limit", help="Maximum DLQ entries to display.")] = 20,
+    config_file: Annotated[Path | None, typer.Option("--config-file", help="Optional YAML config.")] = None,
+) -> None:
+    """Inspect failed Stage 4.2 events stored in the Redis Dead Letter Queue (DLQ)."""
+    worker, neo_store = _build_incremental_worker(config_file, embedder="local_hash")
+    try:
+        entries = worker.list_dlq(limit=limit)
+    finally:
+        if hasattr(neo_store, "close"):
+            neo_store.close()
+    if not entries:
+        console.print("[green]Dead Letter Queue is empty (0 failed events).[/green]")
+        return
+    table = Table(title=f"Redis DLQ Entries ({len(entries)})")
+    table.add_column("Stream ID", style="cyan")
+    table.add_column("Failed At", style="dim")
+    table.add_column("Doc ID", style="yellow")
+    table.add_column("Error", style="red")
+    for item in entries:
+        evt = item.get("event", {})
+        table.add_row(
+            str(item.get("stream_id", "")),
+            str(item.get("failed_at", "")),
+            str(evt.get("doc_id", "-")),
+            str(item.get("error", ""))[:120],
         )
     console.print(table)
